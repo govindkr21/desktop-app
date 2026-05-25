@@ -38,4 +38,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMultimeterLive:  (callback) => ipcRenderer.on('multimeter:live',  (_, value) => callback(value)),
   onDeviceError:     (callback) => ipcRenderer.on('device:error',     (_, msg)   => callback(msg)),
   removeAllListeners:(channel)  => ipcRenderer.removeAllListeners(channel),
+
+  // ── Serial port management ───────────────────
+  listSerialPorts:       ()                   => ipcRenderer.invoke('serial:listPorts'),
+  connectMegger:         (portPath, baudRate) => ipcRenderer.invoke('serial:connectMegger',      { portPath, baudRate }),
+  disconnectMegger:      ()                   => ipcRenderer.invoke('serial:disconnectMegger'),
+  connectMultimeter:     (portPath, baudRate) => ipcRenderer.invoke('serial:connectMultimeter',   { portPath, baudRate }),
+  disconnectMultimeter:  ()                   => ipcRenderer.invoke('serial:disconnectMultimeter'),
+  sendMultimeterCommand: (mode, freq, secondary) => ipcRenderer.invoke('serial:sendMultimeterCommand', { mode, freq, secondary }),
 });

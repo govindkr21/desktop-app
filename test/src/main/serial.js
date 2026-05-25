@@ -31,14 +31,14 @@ async function listPorts() {
 // Replace baud rate with value from Megger manual.
 // Replace parser logic with actual data format from manual.
 
-function connectMegger(portPath = 'COM3') {
+function connectMegger(portPath = 'COM3', baudRate = 9600) {
   if (meggerPort && meggerPort.isOpen) {
     meggerPort.close();
   }
 
   meggerPort = new SerialPort({
     path: portPath,
-    baudRate: 9600, // ← Get actual baud rate from Megger MIT 525 manual
+    baudRate: baudRate,
     dataBits: 8,
     parity: 'none',
     stopBits: 1,
@@ -104,14 +104,14 @@ function disconnectMegger() {
 // NOTE: Replace 'COM4' with actual port.
 // Replace command strings with values from multimeter manual.
 
-function connectMultimeter(portPath = 'COM4') {
+function connectMultimeter(portPath = 'COM4', baudRate = 9600) {
   if (multimeterPort && multimeterPort.isOpen) {
     multimeterPort.close();
   }
 
   multimeterPort = new SerialPort({
     path: portPath,
-    baudRate: 9600, // ← Get actual baud rate from multimeter manual
+    baudRate: baudRate,
     dataBits: 8,
     parity: 'none',
     stopBits: 1,

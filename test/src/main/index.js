@@ -4,6 +4,10 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 
+// ── Top-level requires so webpack asset-relocator traces native deps correctly ──
+const _serial  = require('./serial');  const serial  = _serial.default  || _serial;
+const _reports = require('./reports'); const reports = _reports.default || _reports;
+
 // Keep a global reference so window is not garbage collected
 let mainWindow;
 
@@ -80,7 +84,6 @@ ipcMain.handle('db:clearRecordTestData', (_, recordId)                      => d
 // ── Reports ───────────────────────────────────
 ipcMain.handle('report:exportExcel', async (_, recordId) => {
   try {
-    const reports = require('./reports');
     return await reports.exportExcel(recordId, mainWindow);
   } catch (err) {
     return { success: false, error: err.message };
@@ -89,7 +92,6 @@ ipcMain.handle('report:exportExcel', async (_, recordId) => {
 
 ipcMain.handle('report:exportPDF', async (_, recordId) => {
   try {
-    const reports = require('./reports');
     return await reports.exportPDF(recordId, mainWindow);
   } catch (err) {
     return { success: false, error: err.message };
@@ -101,3 +103,61 @@ ipcMain.handle('shell:openPath', (_, filePath) => {
   shell.showItemInFolder(filePath);
   return { success: true };
 });
+
+// ── Serial / Device connection ─────────────────
+ipcMain.handle('serial:listPorts', async () => {
+  try {
+    const ports = await serial.listPorts();
+    return { success: true, ports };
+  } catch (err) {
+    return { success: false, error: err.message, ports: [] };
+  }
+});
+
+ipcMain.handle('serial:connectMegger', (_, { portPath, baudRate }) => {
+  try {
+    serial.setWindow(mainWindow);
+    serial.connectMegger(portPath, baudRate);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('serial:disconnectMegger', () => {
+  try {
+    serial.disconnectMegger();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('serial:connectMultimeter', (_, { portPath, baudRate }) => {
+  try {
+    serial.setWindow(mainWindow);
+    serial.connectMultimeter(portPath, baudRate);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('serial:disconnectMultimeter', () => {
+  try {
+    serial.disconnectMultimeter();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('serial:sendMultimeterCommand', (_, { mode, freq, secondary }) => {
+  try {
+    serial.sendMultimeterCommand(mode, freq, secondary);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+

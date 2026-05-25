@@ -1,10 +1,11 @@
 // src/renderer/App.jsx
 import { useState, useEffect } from 'react';
-import StartScreen   from './components/StartScreen';
-import InfoTab       from './components/InfoTab';
-import InsulationTab from './components/InsulationTab';
-import MultimeterTab from './components/MultimeterTab';
-import ReportScreen  from './components/ReportScreen';
+import StartScreen          from './components/StartScreen';
+import InfoTab              from './components/InfoTab';
+import InsulationTab        from './components/InsulationTab';
+import MultimeterTab        from './components/MultimeterTab';
+import ReportScreen         from './components/ReportScreen';
+import ConnectionSetupModal from './components/ConnectionSetupModal';
 
 const api = window.electronAPI;
 
@@ -13,11 +14,13 @@ if (!api) {
 }
 
 export default function App() {
-  const [screen,    setScreen]    = useState('start');   // 'start' | 'main'
-  const [activeTab, setActiveTab] = useState('info');
-  const [record,    setRecord]    = useState(null);       // current DB record
-  const [records,   setRecords]   = useState([]);
-  const [demoMode,  setDemoMode]  = useState(true);       // true = demo, false = real device
+  const [screen,        setScreen]        = useState('start');
+  const [activeTab,     setActiveTab]     = useState('info');
+  const [record,        setRecord]        = useState(null);
+  const [records,       setRecords]       = useState([]);
+  const [demoMode,      setDemoMode]      = useState(true);
+  const [showConnSetup, setShowConnSetup] = useState(false);
+  const [connSetupDevice, setConnSetupDevice] = useState('megger'); // which device to pre-select
 
   // Load all records on mount
   useEffect(() => {
@@ -67,6 +70,19 @@ export default function App() {
     setRecord(null);
   }
 
+  // Tab click — show connection setup when switching to a device tab in real mode
+  function handleTabClick(tabKey) {
+    setActiveTab(tabKey);
+    if (!demoMode && tabKey === 'insulation') {
+      setConnSetupDevice('megger');
+      setShowConnSetup(true);
+    }
+    if (!demoMode && tabKey === 'multimeter') {
+      setConnSetupDevice('multimeter');
+      setShowConnSetup(true);
+    }
+  }
+
   async function handleInfoChange(key, value) {
     if (!record) return;
     const updated = await api.updateRecord(record.id, { ...record, [key]: value });
@@ -93,6 +109,7 @@ export default function App() {
   }
 
   return (
+    <>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f1f5f9' }}>
 
       {/* ── Top Bar ── */}
@@ -133,7 +150,7 @@ export default function App() {
             </span>
           </div>
 
-          {/* Toggle switch */}
+          {/* Toggle switch — simply flips mode, no modal */}
           <div
             onClick={() => setDemoMode(prev => !prev)}
             title={demoMode ? 'Switch to Real Device Mode' : 'Switch to Demo Mode'}
@@ -166,7 +183,7 @@ export default function App() {
         {TABS.map(t => (
           <button
             key={t.key}
-            onClick={() => setActiveTab(t.key)}
+            onClick={() => handleTabClick(t.key)}
             style={{
               padding: '12px 22px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               background: 'none', border: 'none',
@@ -176,6 +193,10 @@ export default function App() {
             }}
           >
             {t.label}
+            {/* Show dot on device tabs when in real mode */}
+            {!demoMode && (t.key === 'insulation' || t.key === 'multimeter') && (
+              <span style={{ marginLeft: 4, width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', verticalAlign: 'middle' }}></span>
+            )}
           </button>
         ))}
       </div>
@@ -198,5 +219,20 @@ export default function App() {
       </div>
 
     </div>
+
+    {/* ── Connection Setup Modal (auto-opens when switching to Real Device) ── */}
+    {showConnSetup && (
+      <ConnectionSetupModal
+        defaultDevice={connSetupDevice}
+        onConnect={({ device }) => {
+          setShowConnSetup(false);
+          setDemoMode(false);
+          if (device === 'megger')     setActiveTab('insulation');
+          if (device === 'multimeter') setActiveTab('multimeter');
+        }}
+        onCancel={() => setShowConnSetup(false)}
+      />
+    )}
+    </>
   );
 }

@@ -259,11 +259,18 @@ export default function MultimeterTab({ record, demoMode = true }) {
     if (record) await api.saveMultimeterField(record.id, fieldKey, val, parseFloat(temperature) || 0);
   };
 
-  const handleSetupSave = ({ mode: m, freq: f, secondary: s }) => {
+  const handleSetupSave = async ({ mode: m, freq: f, secondary: s }) => {
     setMode(m);
     setFreq(f);
     setSecondary(s);
     setShowSetup(false);
+    if (!demoMode && api.sendMultimeterCommand) {
+      try {
+        await api.sendMultimeterCommand(m, f, s);
+      } catch (err) {
+        console.error('Failed to send multimeter setup command:', err);
+      }
+    }
   };
 
   const tempNum = Math.min(Math.max(parseFloat(temperature) || 0, 0), 100);
