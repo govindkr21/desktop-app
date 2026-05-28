@@ -28,6 +28,39 @@ async function listPorts() {
   return ports;
 }
 
+// ── Helper to parse host and port robustly from user input ──
+function parseHostAndPort(inputHost, inputPort) {
+  let host = String(inputHost || '127.0.0.1').trim();
+  let port = parseInt(inputPort) || 5000;
+
+  // Strip protocol prefix (e.g. tcp://, http://, etc.)
+  if (host.includes('://')) {
+    host = host.split('://')[1].trim();
+  }
+
+  // Strip trailing slashes or paths if user entered a URL by mistake
+  if (host.includes('/')) {
+    host = host.split('/')[0].trim();
+  }
+
+  // Check if port is appended in host (e.g. host:port)
+  if (host.includes(':')) {
+    const parts = host.split(':');
+    host = parts[0].trim();
+    const parsedPort = parseInt(parts[1].trim());
+    if (!isNaN(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
+      port = parsedPort;
+    }
+  }
+
+  // Final validation
+  if (isNaN(port) || port <= 0 || port > 65535) {
+    port = 5000;
+  }
+
+  return { host, port };
+}
+
 // ─────────────────────────────────────────────
 // MEGGER MIT 525
 // ─────────────────────────────────────────────
@@ -62,20 +95,9 @@ function connectMegger(options) {
   }
 
   if (connectionType === 'tcp') {
-    let cleanHost = String(host).trim();
-    let cleanPort = parseInt(port) || 5000;
-
-    if (cleanHost.includes('://')) {
-      cleanHost = cleanHost.split('://')[1];
-    }
-    if (cleanHost.includes(':')) {
-      const parts = cleanHost.split(':');
-      cleanHost = parts[0];
-      cleanPort = parseInt(parts[1]) || cleanPort;
-    }
-
-    host = cleanHost;
-    port = cleanPort;
+    const parsed = parseHostAndPort(host, port);
+    host = parsed.host;
+    port = parsed.port;
 
     meggerSocket = new net.Socket();
 
@@ -90,10 +112,15 @@ function connectMegger(options) {
     });
 
     console.log(`[Megger TCP] Connecting to ${host}:${port}...`);
-    meggerSocket.connect({ host, port }, () => {
-      console.log(`[Megger TCP] Connected to ${host}:${port}`);
-      if (mainWindow) mainWindow.webContents.send('megger:connected');
-    });
+    try {
+      meggerSocket.connect({ host, port }, () => {
+        console.log(`[Megger TCP] Connected to ${host}:${port}`);
+        if (mainWindow) mainWindow.webContents.send('megger:connected');
+      });
+    } catch (err) {
+      console.error('[Megger TCP] Synchronous connect error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Megger TCP Connect Error: ' + err.message);
+    }
 
     const rl = readline.createInterface({
       input: meggerSocket,
@@ -156,16 +183,48 @@ function connectMegger(options) {
 }
 
 // ── Replace this with actual Megger data format ──
+// ── Parse actual Megger MIT 525 8-column data streams ──
 function parseMeggerLine(line) {
-  // EXAMPLE FORMAT — update based on actual device manual
-  // "60,500,0.05,5000" means time=60s, voltage=500V, current=0.05mA, resistance=5000MΩ
-  const parts = line.trim().split(',');
-  if (parts.length < 4) return null;
+  const cleanLine = line.trim();
+  const parts = cleanLine.split(',');
+  
+  if (parts.length < 6) return null;
+
+  // 1. Time parsing (hh:mm:ss -> total seconds)
+  const timeStr = parts[1] || '';
+  let timeInSeconds = 0;
+  if (timeStr.includes(':')) {
+    const timeParts = timeStr.split(':');
+    const hrs = parseInt(timeParts[0]) || 0;
+    const mins = parseInt(timeParts[1]) || 0;
+    const secs = parseInt(timeParts[2]) || 0;
+    timeInSeconds = hrs * 3600 + mins * 60 + secs;
+  } else {
+    timeInSeconds = parseInt(timeStr) || 0;
+  }
+
+  // 2. Voltages (Nominal in parts[2], Actual in parts[3])
+  const voltage = parseFloat(parts[2]) || 500;
+  const actualVoltage = parseFloat(parts[3]) || voltage;
+
+  // 3. Leakage Current (convert Amps in scientific notation to micro-Amps uA)
+  const rawCurrent = parts[4] || '0';
+  const currentInAmps = parseFloat(rawCurrent) || 0;
+  const currentInMicroAmps = parseFloat((currentInAmps * 1e6).toFixed(6));
+
+  // 4. Insulation Resistance (convert Ohms in scientific notation to Mega-Ohms MΩ)
+  let rawResist = parts[5] || '0';
+  // Strip "greater than" (>) or "less than" (<) operators
+  rawResist = rawResist.replace(/[><]/g, '').trim();
+  const resistanceInOhms = parseFloat(rawResist) || 0;
+  const resistanceInMegaOhms = Math.round(resistanceInOhms / 1e6);
+
   return {
-    time:       parseFloat(parts[0]),
-    voltage:    parseFloat(parts[1]),
-    current:    parseFloat(parts[2]),
-    resistance: parseFloat(parts[3]),
+    time:          timeInSeconds,
+    voltage:       voltage,
+    actualVoltage: actualVoltage,
+    current:       currentInMicroAmps,
+    resistance:    resistanceInMegaOhms
   };
 }
 
@@ -212,20 +271,9 @@ function connectMultimeter(options) {
   }
 
   if (connectionType === 'tcp') {
-    let cleanHost = String(host).trim();
-    let cleanPort = parseInt(port) || 5000;
-
-    if (cleanHost.includes('://')) {
-      cleanHost = cleanHost.split('://')[1];
-    }
-    if (cleanHost.includes(':')) {
-      const parts = cleanHost.split(':');
-      cleanHost = parts[0];
-      cleanPort = parseInt(parts[1]) || cleanPort;
-    }
-
-    host = cleanHost;
-    port = cleanPort;
+    const parsed = parseHostAndPort(host, port);
+    host = parsed.host;
+    port = parsed.port;
 
     multimeterSocket = new net.Socket();
 
@@ -240,10 +288,15 @@ function connectMultimeter(options) {
     });
 
     console.log(`[Multimeter TCP] Connecting to ${host}:${port}...`);
-    multimeterSocket.connect({ host, port }, () => {
-      console.log(`[Multimeter TCP] Connected to ${host}:${port}`);
-      if (mainWindow) mainWindow.webContents.send('multimeter:connected');
-    });
+    try {
+      multimeterSocket.connect({ host, port }, () => {
+        console.log(`[Multimeter TCP] Connected to ${host}:${port}`);
+        if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+      });
+    } catch (err) {
+      console.error('[Multimeter TCP] Synchronous connect error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter TCP Connect Error: ' + err.message);
+    }
 
     const rl = readline.createInterface({
       input: multimeterSocket,
