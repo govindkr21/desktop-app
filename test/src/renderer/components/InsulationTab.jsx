@@ -16,7 +16,7 @@ const TABLE_SUFFIXES = [
   'RST-GND-Rotor'
 ];
 
-export default function InsulationTab({ record, demoMode = true }) {
+export default function InsulationTab({ record, demoMode = true, meggerStatus }) {
   const [activeTab, setActiveTab] = useState('PI'); // 'PI' | 'DAR' | 'SV' | 'RAMP'
   const [tableData, setTableData] = useState({}); // { PI: { 'PI-R-GND-Stator': [...] } }
   const [selectedTable, setSelectedTable] = useState(''); // active table ID
@@ -24,9 +24,17 @@ export default function InsulationTab({ record, demoMode = true }) {
   const [xAxis,         setXAxis]         = useState('time');
   const [yAxis,         setYAxis]         = useState('resistance');
   const [status,        setStatus]        = useState('');
-  const [meggerOnline,  setMeggerOnline]  = useState(false); // only meaningful in real mode
-  const simRef    = useRef(null);
+  
+  // Advanced Diagnostics & Telemetry Watchdog
+  const [temperature, setTemperature] = useState('25');
+  const [telemetryAlert, setTelemetryAlert] = useState(false);
+
+  const simRef = useRef(null);
+  const alertIntervalRef = useRef(null);
+  const lastPacketTime = useRef(Date.now());
   const captureRef = useRef({ activeTab: 'PI', selectedTable: '', record: null });
+
+  const meggerOnline = meggerStatus === 'connected';
 
   // Set default selected table when switching tabs
   useEffect(() => {
@@ -49,8 +57,10 @@ export default function InsulationTab({ record, demoMode = true }) {
 
   const stopCapture = useCallback(() => {
     clearInterval(simRef.current);
+    clearInterval(alertIntervalRef.current);
     setIsCapturing(false);
     setStatus('');
+    setTelemetryAlert(false);
   }, []);
 
   const saveRow = useCallback(async (tab, tableId, row, rec) => {
@@ -70,6 +80,8 @@ export default function InsulationTab({ record, demoMode = true }) {
 
     setIsCapturing(true);
     setStatus('● Recording live data...');
+    setTelemetryAlert(false);
+    lastPacketTime.current = Date.now();
 
     if (demoMode) {
       // ── DEMO MODE: interval simulator ──
@@ -91,21 +103,27 @@ export default function InsulationTab({ record, demoMode = true }) {
         t += 15;
       }, 1200);
     } else {
-      // ── REAL DEVICE MODE: subscribe to Megger IPC events ──
-      // Rows come in via api.onMeggerData whenever the physical Megger
-      // sends a data packet over the USB serial connection.
+      // ── REAL DEVICE MODE ──
+      // 4-Second Inactivity Watchdog
+      alertIntervalRef.current = setInterval(() => {
+        if (Date.now() - lastPacketTime.current > 4000) {
+          setTelemetryAlert(true);
+        }
+      }, 2000);
+
       api.onMeggerData(async (row) => {
+        // Reset telemetry timer
+        lastPacketTime.current = Date.now();
+        setTelemetryAlert(false);
+
         const { activeTab: tab, selectedTable: tbl, record: rec } = captureRef.current;
         if (!tbl) return;
         await saveRow(tab, tbl, row, rec);
       });
 
       api.onMeggerStopped(() => {
-        setIsCapturing(false);
+        stopCapture();
         setStatus('✅ Megger finished sending data.');
-        setMeggerOnline(false);
-        api.removeAllListeners('megger:data');
-        api.removeAllListeners('megger:stopped');
       });
     }
   }, [isCapturing, activeTab, selectedTable, tableData, record, stopCapture, demoMode, saveRow]);
@@ -128,28 +146,16 @@ export default function InsulationTab({ record, demoMode = true }) {
   // Cleanup on unmount
   useEffect(() => () => {
     clearInterval(simRef.current);
+    clearInterval(alertIntervalRef.current);
     api.removeAllListeners('megger:data');
     api.removeAllListeners('megger:connected');
     api.removeAllListeners('megger:stopped');
   }, []);
 
-  // When switching modes, stop capturing and clean up real-device listeners
+  // When switching modes or connection status changes, stop capturing
   useEffect(() => {
     stopCapture();
-    api.removeAllListeners('megger:data');
-    api.removeAllListeners('megger:connected');
-    api.removeAllListeners('megger:stopped');
-
-    if (!demoMode) {
-      // Listen for device connection events
-      api.onMeggerConnected(() => {
-        setMeggerOnline(true);
-        setStatus('🔌 Megger connected — press test button to start.');
-      });
-    } else {
-      setMeggerOnline(false);
-    }
-  }, [demoMode, stopCapture]);
+  }, [demoMode, meggerOnline, stopCapture]);
 
   // Compute metrics for the active table
   const rows = (tableData[activeTab] && tableData[activeTab][selectedTable]) || [];
@@ -159,6 +165,28 @@ export default function InsulationTab({ record, demoMode = true }) {
   const PIval = r600 && r60 ? (r600 / r60).toFixed(2) : '—';
   const DARval = r60 && r30 ? (r60 / r30).toFixed(2) : '—';
   const DDval = rows.length > 2 ? '1.38' : '—';
+
+  // IEEE 43 Temperature Correction calculation to 40°C
+  const tempVal = parseFloat(temperature) || 25;
+  const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+  const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
+  const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
+
+  // Pass/Fail evaluation based on IEEE 43 standards
+  let passStatus = '—';
+  let passColor = '#64748b';
+  if (Rc40 !== null) {
+    if (Rc40 >= 100) {
+      passStatus = 'Pass (Excellent)';
+      passColor = '#16a34a';
+    } else if (Rc40 >= 5) {
+      passStatus = 'Pass (Standard)';
+      passColor = '#2563eb';
+    } else {
+      passStatus = 'Fail (Low Insulation)';
+      passColor = '#dc2626';
+    }
+  }
 
   // Sub-tabs styles
   const subBtn = (active) => ({
@@ -246,6 +274,17 @@ export default function InsulationTab({ record, demoMode = true }) {
   return (
     <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100vh - 112px)', boxSizing: 'border-box' }}>
       
+      {/* Telemetry Alert Watchdog Banner */}
+      {telemetryAlert && (
+        <div style={{
+          background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8,
+          padding: '8px 16px', color: '#991b1b', fontSize: 12, fontWeight: 700,
+          display: 'flex', alignItems: 'center', gap: 8, animation: 'pulse 2s infinite'
+        }}>
+          ⚠️ Telemetry Alert: No data packets received from Megger port. Please check device power, verify it is set to TRANSMIT, or check the COM connection setup.
+        </div>
+      )}
+
       {/* ── TOP ACTION BAR ── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '10px 16px' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -266,7 +305,7 @@ export default function InsulationTab({ record, demoMode = true }) {
               display: 'inline-block',
             }}></span>
             <span style={{ fontSize: 11, fontWeight: 700, color: demoMode ? '#854d0e' : meggerOnline ? '#065f46' : '#991b1b' }}>
-              {demoMode ? '🎭 Demo' : meggerOnline ? '✅ Megger Online' : '⚠ Awaiting Megger'}
+              {demoMode ? '🎭 Demo Mode' : meggerOnline ? '✅ Megger Online' : '⚠️ Megger Offline'}
             </span>
           </div>
         </div>
@@ -361,14 +400,51 @@ export default function InsulationTab({ record, demoMode = true }) {
               )}
             </div>
 
-            {/* Calculation Readouts */}
-            <div style={{ display: 'flex', gap: 10, marginTop: 10, borderTop: '1px solid #f1f5f9', paddingTop: 8 }}>
-              {[['PI', PIval], ['DAR', DARval], ['DD', DDval]].map(([lbl, val]) => (
-                <div key={lbl} style={{ flex: 1, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 12px', textAlign: 'center' }}>
-                  <span style={{ fontSize: 10, color: '#94a3b8', display: 'block', fontWeight: 700 }}>{lbl}</span>
-                  <span style={{ fontSize: 18, fontWeight: 700, color: '#1e40af', marginTop: 2 }}>{val}</span>
+            {/* Calculation Readouts Panel */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10, borderTop: '1px solid #f1f5f9', paddingTop: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[['PI', PIval], ['DAR', DARval], ['DD', DDval]].map(([lbl, val]) => (
+                  <div key={lbl} style={{ flex: 1, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 8px', textAlign: 'center' }}>
+                    <span style={{ fontSize: 9, color: '#94a3b8', display: 'block', fontWeight: 700 }}>{lbl}</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: '#1e40af', marginTop: 1 }}>{val}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Temperature Correction and Pass/Fail display */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#475569' }}>TEST TEMP</span>
+                  <input
+                    type="number"
+                    value={temperature}
+                    onChange={e => setTemperature(e.target.value)}
+                    style={{ width: 48, border: '1px solid #cbd5e1', borderRadius: 4, padding: '3px 6px', fontSize: 11, fontWeight: 700, textAlign: 'center' }}
+                  />
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>°C</span>
                 </div>
-              ))}
+
+                <div style={{ height: 18, width: 1, background: '#cbd5e1' }}></div>
+
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, display: 'block' }}>CORRECTED R40 (IEEE 43)</span>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: '#1e40af' }}>
+                      {Rc40 !== null ? `${Rc40.toLocaleString()} MΩ` : '—'}
+                    </span>
+                  </div>
+                  
+                  {Rc40 !== null && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 800, color: '#fff',
+                      background: passColor, borderRadius: 6, padding: '4px 8px',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                    }}>
+                      {passStatus}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
           </div>

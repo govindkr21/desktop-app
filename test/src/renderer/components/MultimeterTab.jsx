@@ -211,7 +211,7 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
 }
 
 // ── Main component ────────────────────────────────────────
-export default function MultimeterTab({ record, demoMode = true }) {
+export default function MultimeterTab({ record, demoMode = true, multimeterStatus }) {
   const [mode,      setMode]      = useState('R');
   const [freq,      setFreq]      = useState('120Hz');
   const [secondary, setSecondary] = useState('D');
@@ -220,7 +220,14 @@ export default function MultimeterTab({ record, demoMode = true }) {
   const [temperature, setTemperature] = useState('25');
   const [showSetup, setShowSetup] = useState(false);
 
+  // Watchdog Telemetry states
+  const [telemetryAlert, setTelemetryAlert] = useState(false);
+
   const liveRef = useRef(null);
+  const watchdogIntervalRef = useRef(null);
+  const lastValueTime = useRef(Date.now());
+
+  const multimeterOnline = multimeterStatus === 'connected';
 
   // Load saved data on mount
   useEffect(() => {
@@ -237,21 +244,43 @@ export default function MultimeterTab({ record, demoMode = true }) {
     });
   }, [record?.id]);
 
-  // Demo / Real mode simulator
+  // Watchdog & live feed simulation
   useEffect(() => {
     clearInterval(liveRef.current);
+    clearInterval(watchdogIntervalRef.current);
+    setTelemetryAlert(false);
+
     if (demoMode) {
       const base = mode === 'R' ? 12.4 : mode === 'L' ? 145.2 : 47.8;
       liveRef.current = setInterval(() => {
         const noise = (Math.random() - 0.5) * base * 0.05;
         setLiveValue(parseFloat((base + noise).toFixed(3)));
       }, 400);
-      return () => clearInterval(liveRef.current);
     } else {
-      api.onMultimeterLive(v => setLiveValue(v));
-      return () => api.removeAllListeners('multimeter:live');
+      if (multimeterOnline) {
+        lastValueTime.current = Date.now();
+        watchdogIntervalRef.current = setInterval(() => {
+          if (Date.now() - lastValueTime.current > 4000) {
+            setTelemetryAlert(true);
+          }
+        }, 2000);
+
+        api.onMultimeterLive(v => {
+          lastValueTime.current = Date.now();
+          setTelemetryAlert(false);
+          setLiveValue(v);
+        });
+      }
     }
-  }, [mode, demoMode]);
+
+    return () => {
+      clearInterval(liveRef.current);
+      clearInterval(watchdogIntervalRef.current);
+      if (!demoMode) {
+        api.removeAllListeners('multimeter:live');
+      }
+    };
+  }, [mode, demoMode, multimeterOnline]);
 
   const handleCapture = async (fieldKey) => {
     const val = liveValue;
@@ -273,11 +302,72 @@ export default function MultimeterTab({ record, demoMode = true }) {
     }
   };
 
+  // --- Imbalance & Diagnostic Analytics (IEEE and Standard Industrial limits) ---
+  function calculateImbalance(v1, v2, v3) {
+    if (v1 === undefined || v2 === undefined || v3 === undefined) return null;
+    const num1 = parseFloat(v1);
+    const num2 = parseFloat(v2);
+    const num3 = parseFloat(v3);
+    if (isNaN(num1) || isNaN(num2) || isNaN(num3)) return null;
+
+    const avg = (num1 + num2 + num3) / 3;
+    if (avg === 0) return 0;
+
+    const dev1 = Math.abs(num1 - avg);
+    const dev2 = Math.abs(num2 - avg);
+    const dev3 = Math.abs(num3 - avg);
+    const maxDev = Math.max(dev1, dev2, dev3);
+
+    return (maxDev / avg) * 100;
+  }
+
+  const statorResImb = calculateImbalance(captured['stator_res_1-2'], captured['stator_res_1-3'], captured['stator_res_2-3']);
+  const statorIndImb = calculateImbalance(captured['stator_ind_1-2'], captured['stator_ind_1-3'], captured['stator_ind_2-3']);
+  const rotorResImb = calculateImbalance(captured['rotor_res_1-2'], captured['rotor_res_1-3'], captured['rotor_res_2-3']);
+  const rotorIndImb = calculateImbalance(captured['rotor_ind_1-2'], captured['rotor_ind_1-3'], captured['rotor_ind_2-3']);
+
+  function renderImbalanceBadge(imb) {
+    if (imb === null) return <span style={{ color: '#94a3b8', fontSize: 10, fontWeight: 600 }}>Awaiting 3-phase inputs</span>;
+    
+    let color = '#10b981'; // pass
+    let label = 'Pass (Balanced)';
+    if (imb > 5) {
+      color = '#dc2626'; // fail
+      label = 'Fail (High Imbalance)';
+    } else if (imb > 2) {
+      color = '#d97706'; // warning
+      label = 'Warning (Moderate Imbalance)';
+    }
+
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, color: '#0f172a', fontFamily: 'monospace' }}>{imb.toFixed(2)}%</span>
+        <span style={{
+          fontSize: 8, fontWeight: 800, color: '#fff',
+          background: color, borderRadius: 5, padding: '2px 6px',
+        }}>
+          {label}
+        </span>
+      </div>
+    );
+  }
+
   const tempNum = Math.min(Math.max(parseFloat(temperature) || 0, 0), 100);
   const unit = mode === 'R' ? 'Ω' : mode === 'L' ? 'mH' : 'nF';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 112px)', boxSizing: 'border-box', padding: 12, gap: 10 }}>
+
+      {/* Telemetry Alert Watchdog Banner */}
+      {telemetryAlert && (
+        <div style={{
+          background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8,
+          padding: '8px 16px', color: '#991b1b', fontSize: 12, fontWeight: 700,
+          display: 'flex', alignItems: 'center', gap: 8, animation: 'pulse 2s infinite', flexShrink: 0
+        }}>
+          ⚠️ Telemetry Alert: No live streaming data received from Multimeter port. Please verify device power, set to active stream mode, or verify connection baud rate.
+        </div>
+      )}
 
       {/* ── TOP BAR ── */}
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
@@ -309,13 +399,13 @@ export default function MultimeterTab({ record, demoMode = true }) {
           {/* Mode status badge */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: 5,
-            background: demoMode ? 'rgba(234,179,8,0.08)' : '#ecfdf5',
-            border: `1px solid ${demoMode ? '#ca8a04' : '#a7f3d0'}`,
+            background: demoMode ? 'rgba(234,179,8,0.08)' : multimeterOnline ? '#ecfdf5' : '#fef2f2',
+            border: `1px solid ${demoMode ? '#ca8a04' : multimeterOnline ? '#a7f3d0' : '#fca5a5'}`,
             borderRadius: 20, padding: '3px 10px',
           }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: demoMode ? '#eab308' : '#10b981', display: 'inline-block' }}></span>
-            <span style={{ fontSize: 11, fontWeight: 700, color: demoMode ? '#854d0e' : '#065f46' }}>
-              {demoMode ? 'Demo' : 'Real Device'}
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: demoMode ? '#eab308' : multimeterOnline ? '#10b981' : '#ef4444', display: 'inline-block' }}></span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: demoMode ? '#854d0e' : multimeterOnline ? '#065f46' : '#991b1b' }}>
+              {demoMode ? '🎭 Demo Mode' : multimeterOnline ? '✅ Multimeter Online' : '⚠️ Multimeter Offline'}
             </span>
           </div>
         </div>
@@ -339,11 +429,23 @@ export default function MultimeterTab({ record, demoMode = true }) {
             <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="stator_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
           </div>
 
+          {/* Analysis box */}
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', display: 'block', borderBottom: '1px solid #f1f5f9', paddingBottom: 3 }}>📊 PHASE BALANCE ANALYSIS</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Resistance Imbalance:</span>
+              {renderImbalanceBadge(statorResImb)}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Inductance Imbalance:</span>
+              {renderImbalanceBadge(statorIndImb)}
+            </div>
+          </div>
+
           {/* Temperature row */}
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
             {/* Thermometer */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {/* Scale labels */}
               <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 4 }}>
                 <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 80, fontSize: 8, color: '#94a3b8', textAlign: 'right', paddingBottom: 2 }}>
                   <span>100</span><span>80</span><span>60</span><span>40</span><span>20</span><span>0</span>
@@ -388,6 +490,19 @@ export default function MultimeterTab({ record, demoMode = true }) {
               <MeasGroup title="Winding Inductance" keys={IND_KEYS} prefix="rotor_ind" unit="mH"  captured={captured} onCapture={handleCapture} />
             </div>
             <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="rotor_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
+          </div>
+
+          {/* Analysis box */}
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', display: 'block', borderBottom: '1px solid #f1f5f9', paddingBottom: 3 }}>📊 PHASE BALANCE ANALYSIS</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Resistance Imbalance:</span>
+              {renderImbalanceBadge(rotorResImb)}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Inductance Imbalance:</span>
+              {renderImbalanceBadge(rotorIndImb)}
+            </div>
           </div>
 
           {/* Live readout display */}

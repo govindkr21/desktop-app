@@ -20,7 +20,59 @@ export default function App() {
   const [records,       setRecords]       = useState([]);
   const [demoMode,      setDemoMode]      = useState(true);
   const [showConnSetup, setShowConnSetup] = useState(false);
-  const [connSetupDevice, setConnSetupDevice] = useState('megger'); // which device to pre-select
+
+  // Global Device Connection Status State
+  const [meggerStatus, setMeggerStatus] = useState('disconnected');
+  const [multimeterStatus, setMultimeterStatus] = useState('disconnected');
+  const [meggerPort, setMeggerPort] = useState('');
+  const [multimeterPort, setMultimeterPort] = useState('');
+  const [toastMessage, setToastMessage] = useState(null);
+
+  // Set up listeners for physical device connection & errors
+  useEffect(() => {
+    if (!api) return;
+
+    api.onMeggerConnected(() => {
+      setMeggerStatus('connected');
+      setToastMessage({ type: 'success', text: '⚡ Megger connected successfully!' });
+      setTimeout(() => setToastMessage(null), 4000);
+    });
+
+    api.onMeggerStopped(() => {
+      setMeggerStatus('disconnected');
+      setToastMessage({ type: 'info', text: '🔌 Megger connection closed.' });
+      setTimeout(() => setToastMessage(null), 4000);
+    });
+
+    api.onMultimeterConnected(() => {
+      setMultimeterStatus('connected');
+      setToastMessage({ type: 'success', text: '🌀 Multimeter connected successfully!' });
+      setTimeout(() => setToastMessage(null), 4000);
+    });
+
+    api.onMultimeterStopped(() => {
+      setMultimeterStatus('disconnected');
+      setToastMessage({ type: 'info', text: '🔌 Multimeter connection closed.' });
+      setTimeout(() => setToastMessage(null), 4000);
+    });
+
+    api.onDeviceError((msg) => {
+      setToastMessage({ type: 'error', text: `⚠️ Device Error: ${msg}` });
+      if (msg.toLowerCase().includes('megger')) {
+        setMeggerStatus('disconnected');
+      } else if (msg.toLowerCase().includes('multimeter')) {
+        setMultimeterStatus('disconnected');
+      }
+    });
+
+    return () => {
+      api.removeAllListeners('megger:connected');
+      api.removeAllListeners('megger:stopped');
+      api.removeAllListeners('multimeter:connected');
+      api.removeAllListeners('multimeter:stopped');
+      api.removeAllListeners('device:error');
+    };
+  }, []);
 
   // Load all records on mount
   useEffect(() => {
@@ -70,17 +122,9 @@ export default function App() {
     setRecord(null);
   }
 
-  // Tab click — show connection setup when switching to a device tab in real mode
+  // Tab click
   function handleTabClick(tabKey) {
     setActiveTab(tabKey);
-    if (!demoMode && tabKey === 'insulation') {
-      setConnSetupDevice('megger');
-      setShowConnSetup(true);
-    }
-    if (!demoMode && tabKey === 'multimeter') {
-      setConnSetupDevice('multimeter');
-      setShowConnSetup(true);
-    }
   }
 
   async function handleInfoChange(key, value) {
@@ -123,10 +167,58 @@ export default function App() {
           </span>
         </div>
 
-        {/* ── Centre info ── */}
-        <div style={{ fontSize: 12, color: '#93c5fd', display: 'flex', gap: 20 }}>
-          <span>{record?.location}</span>
-          <span>{record?.date}</span>
+        {/* ── Centre info & device connectivity status ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div style={{ fontSize: 12, color: '#93c5fd', display: 'flex', gap: 15 }}>
+            <span>{record?.location}</span>
+            <span>{record?.date}</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* Megger connectivity pill */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              background: 'rgba(255,255,255,0.06)', borderRadius: 6,
+              padding: '3px 8px', border: '1px solid rgba(255,255,255,0.1)',
+            }} title={`Megger Status: ${meggerStatus}`}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: meggerStatus === 'connected' ? '#10b981' : meggerStatus === 'connecting' ? '#eab308' : '#64748b',
+                display: 'inline-block'
+              }}></span>
+              <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 600 }}>Megger: {meggerStatus}</span>
+            </div>
+
+            {/* Multimeter connectivity pill */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              background: 'rgba(255,255,255,0.06)', borderRadius: 6,
+              padding: '3px 8px', border: '1px solid rgba(255,255,255,0.1)',
+            }} title={`Multimeter Status: ${multimeterStatus}`}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: multimeterStatus === 'connected' ? '#10b981' : multimeterStatus === 'connecting' ? '#eab308' : '#64748b',
+                display: 'inline-block'
+              }}></span>
+              <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 600 }}>Multimeter: {multimeterStatus}</span>
+            </div>
+
+            {/* Connection setup trigger button */}
+            <button
+              onClick={() => setShowConnSetup(true)}
+              style={{
+                background: '#2563eb', color: '#fff', border: 'none',
+                borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700,
+                cursor: 'pointer', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 4,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = '#1d4ed8'}
+              onMouseLeave={(e) => e.currentTarget.style.background = '#2563eb'}
+            >
+              🔌 Connection Setup
+            </button>
+          </div>
         </div>
 
         {/* ── Demo / Real Mode Toggle ── */}
@@ -213,24 +305,55 @@ export default function App() {
             loadRecords={loadRecords}
           />
         )}
-        {activeTab === 'insulation' && <InsulationTab record={record} demoMode={demoMode} />}
-        {activeTab === 'multimeter' && <MultimeterTab record={record} demoMode={demoMode} />}
+        {activeTab === 'insulation' && (
+          <InsulationTab
+            record={record}
+            demoMode={demoMode}
+            meggerStatus={meggerStatus}
+            setMeggerStatus={setMeggerStatus}
+          />
+        )}
+        {activeTab === 'multimeter' && (
+          <MultimeterTab
+            record={record}
+            demoMode={demoMode}
+            multimeterStatus={multimeterStatus}
+            setMultimeterStatus={setMultimeterStatus}
+          />
+        )}
         {activeTab === 'report'     && <ReportScreen  record={record} />}
       </div>
 
     </div>
 
-    {/* ── Connection Setup Modal (auto-opens when switching to Real Device) ── */}
+    {/* Toast Alert Notification */}
+    {toastMessage && (
+      <div style={{
+        position: 'fixed', top: 50, right: 20, zIndex: 9999,
+        background: toastMessage.type === 'error' ? '#fef2f2' : toastMessage.type === 'success' ? '#f0fdf4' : '#eff6ff',
+        border: `1px solid ${toastMessage.type === 'error' ? '#fca5a5' : toastMessage.type === 'success' ? '#86efac' : '#bfdbfe'}`,
+        borderRadius: 8, padding: '10px 16px', color: toastMessage.type === 'error' ? '#991b1b' : toastMessage.type === 'success' ? '#166534' : '#1d4ed8',
+        fontSize: 12, fontWeight: 600, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+        display: 'flex', alignItems: 'center', gap: 8,
+      }}>
+        <span>{toastMessage.text}</span>
+        <button onClick={() => setToastMessage(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: 'inherit', fontWeight: 'bold' }}>×</button>
+      </div>
+    )}
+
+    {/* ── Connection Setup Modal (No-tabs, unified, direct access) ── */}
     {showConnSetup && (
       <ConnectionSetupModal
-        defaultDevice={connSetupDevice}
-        onConnect={({ device }) => {
-          setShowConnSetup(false);
-          setDemoMode(false);
-          if (device === 'megger')     setActiveTab('insulation');
-          if (device === 'multimeter') setActiveTab('multimeter');
-        }}
+        meggerStatus={meggerStatus}
+        setMeggerStatus={setMeggerStatus}
+        meggerPort={meggerPort}
+        setMeggerPort={setMeggerPort}
+        multimeterStatus={multimeterStatus}
+        setMultimeterStatus={setMultimeterStatus}
+        multimeterPort={multimeterPort}
+        setMultimeterPort={setMultimeterPort}
         onCancel={() => setShowConnSetup(false)}
+        setDemoMode={setDemoMode}
       />
     )}
     </>

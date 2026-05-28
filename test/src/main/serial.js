@@ -7,9 +7,13 @@
 
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
+const net = require('net');
+const readline = require('readline');
 
 let meggerPort = null;
 let multimeterPort = null;
+let meggerSocket = null;
+let multimeterSocket = null;
 let mainWindow = null;
 
 // ── Set reference to main window for sending events ──
@@ -31,51 +35,124 @@ async function listPorts() {
 // Replace baud rate with value from Megger manual.
 // Replace parser logic with actual data format from manual.
 
-function connectMegger(portPath = 'COM3', baudRate = 9600) {
-  if (meggerPort && meggerPort.isOpen) {
-    meggerPort.close();
+function connectMegger(options) {
+  let connectionType = 'serial';
+  let portPath = 'COM3';
+  let baudRate = 9600;
+  let host = '127.0.0.1';
+  let port = 5000;
+
+  if (typeof options === 'string') {
+    portPath = options;
+  } else if (options && typeof options === 'object') {
+    connectionType = options.connectionType || 'serial';
+    portPath = options.portPath || 'COM3';
+    baudRate = options.baudRate || 9600;
+    host = options.host || '127.0.0.1';
+    port = options.port || 5000;
   }
 
-  meggerPort = new SerialPort({
-    path: portPath,
-    baudRate: baudRate,
-    dataBits: 8,
-    parity: 'none',
-    stopBits: 1,
-    autoOpen: true,
-  });
+  // Always clean up existing connections first
+  if (meggerPort && meggerPort.isOpen) {
+    try { meggerPort.close(); } catch(e) { console.error('[Megger] Close error:', e.message); }
+  }
+  if (meggerSocket) {
+    try { meggerSocket.destroy(); } catch(e) { console.error('[Megger TCP] Destroy error:', e.message); }
+    meggerSocket = null;
+  }
 
-  const parser = meggerPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+  if (connectionType === 'tcp') {
+    let cleanHost = String(host).trim();
+    let cleanPort = parseInt(port) || 5000;
 
-  meggerPort.on('open', () => {
-    console.log('[Megger] Connected on', portPath);
-    if (mainWindow) mainWindow.webContents.send('megger:connected');
-  });
-
-  // ── Parse incoming Megger data ─────────────
-  // TODO: Replace this parser with actual Megger MIT 525 protocol
-  // Actual format from manual may look like: "T=60,V=500,I=0.05,R=5000"
-  parser.on('data', (line) => {
-    try {
-      console.log('[Megger] Raw data:', line);
-      const row = parseMeggerLine(line);
-      if (row && mainWindow) {
-        mainWindow.webContents.send('megger:data', row);
-      }
-    } catch (err) {
-      console.error('[Megger] Parse error:', err.message);
+    if (cleanHost.includes('://')) {
+      cleanHost = cleanHost.split('://')[1];
     }
-  });
+    if (cleanHost.includes(':')) {
+      const parts = cleanHost.split(':');
+      cleanHost = parts[0];
+      cleanPort = parseInt(parts[1]) || cleanPort;
+    }
 
-  meggerPort.on('error', (err) => {
-    console.error('[Megger] Error:', err.message);
-    if (mainWindow) mainWindow.webContents.send('device:error', 'Megger: ' + err.message);
-  });
+    host = cleanHost;
+    port = cleanPort;
 
-  meggerPort.on('close', () => {
-    console.log('[Megger] Disconnected');
-    if (mainWindow) mainWindow.webContents.send('megger:stopped');
-  });
+    meggerSocket = new net.Socket();
+
+    meggerSocket.on('error', (err) => {
+      console.error('[Megger TCP] Error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Megger TCP: ' + err.message);
+    });
+
+    meggerSocket.on('close', () => {
+      console.log('[Megger TCP] Connection closed');
+      if (mainWindow) mainWindow.webContents.send('megger:stopped');
+    });
+
+    console.log(`[Megger TCP] Connecting to ${host}:${port}...`);
+    meggerSocket.connect({ host, port }, () => {
+      console.log(`[Megger TCP] Connected to ${host}:${port}`);
+      if (mainWindow) mainWindow.webContents.send('megger:connected');
+    });
+
+    const rl = readline.createInterface({
+      input: meggerSocket,
+      crlfDelay: Infinity
+    });
+
+    rl.on('line', (line) => {
+      try {
+        console.log('[Megger TCP] Raw line:', line);
+        const row = parseMeggerLine(line);
+        if (row && mainWindow) {
+          mainWindow.webContents.send('megger:data', row);
+        }
+      } catch (err) {
+        console.error('[Megger TCP] Parse error:', err.message);
+      }
+    });
+
+  } else {
+    // Legacy Serial port connection
+    meggerPort = new SerialPort({
+      path: portPath,
+      baudRate: baudRate,
+      dataBits: 8,
+      parity: 'none',
+      stopBits: 1,
+      autoOpen: true,
+    });
+
+    const parser = meggerPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+
+    meggerPort.on('open', () => {
+      console.log('[Megger] Connected on', portPath);
+      if (mainWindow) mainWindow.webContents.send('megger:connected');
+    });
+
+    // ── Parse incoming Megger data ─────────────
+    parser.on('data', (line) => {
+      try {
+        console.log('[Megger] Raw data:', line);
+        const row = parseMeggerLine(line);
+        if (row && mainWindow) {
+          mainWindow.webContents.send('megger:data', row);
+        }
+      } catch (err) {
+        console.error('[Megger] Parse error:', err.message);
+      }
+    });
+
+    meggerPort.on('error', (err) => {
+      console.error('[Megger] Error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Megger: ' + err.message);
+    });
+
+    meggerPort.on('close', () => {
+      console.log('[Megger] Disconnected');
+      if (mainWindow) mainWindow.webContents.send('megger:stopped');
+    });
+  }
 }
 
 // ── Replace this with actual Megger data format ──
@@ -94,7 +171,11 @@ function parseMeggerLine(line) {
 
 function disconnectMegger() {
   if (meggerPort && meggerPort.isOpen) {
-    meggerPort.close();
+    try { meggerPort.close(); } catch(e) { console.error('[Megger] Close error:', e.message); }
+  }
+  if (meggerSocket) {
+    try { meggerSocket.destroy(); } catch(e) { console.error('[Megger TCP] Destroy error:', e.message); }
+    meggerSocket = null;
   }
 }
 
@@ -104,52 +185,141 @@ function disconnectMegger() {
 // NOTE: Replace 'COM4' with actual port.
 // Replace command strings with values from multimeter manual.
 
-function connectMultimeter(portPath = 'COM4', baudRate = 9600) {
-  if (multimeterPort && multimeterPort.isOpen) {
-    multimeterPort.close();
+function connectMultimeter(options) {
+  let connectionType = 'serial';
+  let portPath = 'COM4';
+  let baudRate = 9600;
+  let host = '127.0.0.1';
+  let port = 5000;
+
+  if (typeof options === 'string') {
+    portPath = options;
+  } else if (options && typeof options === 'object') {
+    connectionType = options.connectionType || 'serial';
+    portPath = options.portPath || 'COM4';
+    baudRate = options.baudRate || 9600;
+    host = options.host || '127.0.0.1';
+    port = options.port || 5000;
   }
 
-  multimeterPort = new SerialPort({
-    path: portPath,
-    baudRate: baudRate,
-    dataBits: 8,
-    parity: 'none',
-    stopBits: 1,
-    autoOpen: true,
-  });
+  // Always clean up existing connections first
+  if (multimeterPort && multimeterPort.isOpen) {
+    try { multimeterPort.close(); } catch(e) { console.error('[Multimeter] Close error:', e.message); }
+  }
+  if (multimeterSocket) {
+    try { multimeterSocket.destroy(); } catch(e) { console.error('[Multimeter TCP] Destroy error:', e.message); }
+    multimeterSocket = null;
+  }
 
-  const parser = multimeterPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+  if (connectionType === 'tcp') {
+    let cleanHost = String(host).trim();
+    let cleanPort = parseInt(port) || 5000;
 
-  multimeterPort.on('open', () => {
-    console.log('[Multimeter] Connected on', portPath);
-  });
-
-  parser.on('data', (line) => {
-    try {
-      const value = parseMultimeterLine(line);
-      if (value !== null && mainWindow) {
-        mainWindow.webContents.send('multimeter:live', value);
-      }
-    } catch (err) {
-      console.error('[Multimeter] Parse error:', err.message);
+    if (cleanHost.includes('://')) {
+      cleanHost = cleanHost.split('://')[1];
     }
-  });
+    if (cleanHost.includes(':')) {
+      const parts = cleanHost.split(':');
+      cleanHost = parts[0];
+      cleanPort = parseInt(parts[1]) || cleanPort;
+    }
 
-  multimeterPort.on('error', (err) => {
-    console.error('[Multimeter] Error:', err.message);
-    if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter: ' + err.message);
-  });
+    host = cleanHost;
+    port = cleanPort;
+
+    multimeterSocket = new net.Socket();
+
+    multimeterSocket.on('error', (err) => {
+      console.error('[Multimeter TCP] Error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter TCP: ' + err.message);
+    });
+
+    multimeterSocket.on('close', () => {
+      console.log('[Multimeter TCP] Connection closed');
+      if (mainWindow) mainWindow.webContents.send('multimeter:stopped');
+    });
+
+    console.log(`[Multimeter TCP] Connecting to ${host}:${port}...`);
+    multimeterSocket.connect({ host, port }, () => {
+      console.log(`[Multimeter TCP] Connected to ${host}:${port}`);
+      if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+    });
+
+    const rl = readline.createInterface({
+      input: multimeterSocket,
+      crlfDelay: Infinity
+    });
+
+    rl.on('line', (line) => {
+      try {
+        const value = parseMultimeterLine(line);
+        if (value !== null && mainWindow) {
+          mainWindow.webContents.send('multimeter:live', value);
+        }
+      } catch (err) {
+        console.error('[Multimeter TCP] Parse error:', err.message);
+      }
+    });
+
+  } else {
+    // Legacy Serial port connection
+    multimeterPort = new SerialPort({
+      path: portPath,
+      baudRate: baudRate,
+      dataBits: 8,
+      parity: 'none',
+      stopBits: 1,
+      autoOpen: true,
+    });
+
+    const parser = multimeterPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+
+    multimeterPort.on('open', () => {
+      console.log('[Multimeter] Connected on', portPath);
+      if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+    });
+
+    parser.on('data', (line) => {
+      try {
+        const value = parseMultimeterLine(line);
+        if (value !== null && mainWindow) {
+          mainWindow.webContents.send('multimeter:live', value);
+        }
+      } catch (err) {
+        console.error('[Multimeter] Parse error:', err.message);
+      }
+    });
+
+    multimeterPort.on('error', (err) => {
+      console.error('[Multimeter] Error:', err.message);
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter: ' + err.message);
+    });
+
+    multimeterPort.on('close', () => {
+      console.log('[Multimeter] Disconnected');
+      if (mainWindow) mainWindow.webContents.send('multimeter:stopped');
+    });
+  }
 }
 
 // ── Send command to multimeter to change mode ──
 // Replace command strings with actual commands from device manual
 function sendMultimeterCommand(mode, frequency, secondary) {
-  if (!multimeterPort || !multimeterPort.isOpen) return;
   const command = buildCommand(mode, frequency, secondary);
-  multimeterPort.write(command + '\r\n', (err) => {
-    if (err) console.error('[Multimeter] Write error:', err.message);
-    else console.log('[Multimeter] Command sent:', command);
-  });
+  
+  if (multimeterPort && multimeterPort.isOpen) {
+    multimeterPort.write(command + '\r\n', (err) => {
+      if (err) console.error('[Multimeter] Write error:', err.message);
+      else console.log('[Multimeter] Command sent:', command);
+    });
+  }
+
+  if (multimeterSocket && !multimeterSocket.destroyed) {
+    multimeterSocket.write(command + '\r\n', (err) => {
+      if (err) console.error('[Multimeter TCP] Write error:', err.message);
+      else console.log('[Multimeter TCP] Command sent:', command);
+    });
+  }
 }
 
 // ── Replace with actual command format from manual ──
@@ -165,7 +335,11 @@ function parseMultimeterLine(line) {
 
 function disconnectMultimeter() {
   if (multimeterPort && multimeterPort.isOpen) {
-    multimeterPort.close();
+    try { multimeterPort.close(); } catch(e) { console.error('[Multimeter] Close error:', e.message); }
+  }
+  if (multimeterSocket) {
+    try { multimeterSocket.destroy(); } catch(e) { console.error('[Multimeter TCP] Destroy error:', e.message); }
+    multimeterSocket = null;
   }
 }
 

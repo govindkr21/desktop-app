@@ -11,6 +11,21 @@ const _reports = require('./reports'); const reports = _reports.default || _repo
 // Keep a global reference so window is not garbage collected
 let mainWindow;
 
+// Catch uncaught exceptions and unhandled rejections gracefully to prevent crash popups
+process.on('uncaughtException', (err) => {
+  console.error('[Main] Uncaught Exception:', err);
+  if (mainWindow && mainWindow.webContents) {
+    mainWindow.webContents.send('device:error', 'Main Process Error: ' + err.message);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Main] Unhandled Rejection:', reason);
+  if (mainWindow && mainWindow.webContents) {
+    mainWindow.webContents.send('device:error', 'Main Process Rejection: ' + (reason ? reason.message || reason : 'Unknown rejection'));
+  }
+});
+
 const createWindow = () => {
   console.log('Main Window Entry:', MAIN_WINDOW_WEBPACK_ENTRY);
   console.log('Preload Entry:', MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY);
@@ -114,10 +129,10 @@ ipcMain.handle('serial:listPorts', async () => {
   }
 });
 
-ipcMain.handle('serial:connectMegger', (_, { portPath, baudRate }) => {
+ipcMain.handle('serial:connectMegger', (_, options) => {
   try {
     serial.setWindow(mainWindow);
-    serial.connectMegger(portPath, baudRate);
+    serial.connectMegger(options);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -133,10 +148,10 @@ ipcMain.handle('serial:disconnectMegger', () => {
   }
 });
 
-ipcMain.handle('serial:connectMultimeter', (_, { portPath, baudRate }) => {
+ipcMain.handle('serial:connectMultimeter', (_, options) => {
   try {
     serial.setWindow(mainWindow);
-    serial.connectMultimeter(portPath, baudRate);
+    serial.connectMultimeter(options);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };

@@ -36,14 +36,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMeggerConnected: (callback) => ipcRenderer.on('megger:connected', ()         => callback()),
   onMeggerStopped:   (callback) => ipcRenderer.on('megger:stopped',   ()         => callback()),
   onMultimeterLive:  (callback) => ipcRenderer.on('multimeter:live',  (_, value) => callback(value)),
+  onMultimeterConnected: (callback) => ipcRenderer.on('multimeter:connected', ()         => callback()),
+  onMultimeterStopped:   (callback) => ipcRenderer.on('multimeter:stopped',   ()         => callback()),
   onDeviceError:     (callback) => ipcRenderer.on('device:error',     (_, msg)   => callback(msg)),
   removeAllListeners:(channel)  => ipcRenderer.removeAllListeners(channel),
 
   // ── Serial port management ───────────────────
   listSerialPorts:       ()                   => ipcRenderer.invoke('serial:listPorts'),
-  connectMegger:         (portPath, baudRate) => ipcRenderer.invoke('serial:connectMegger',      { portPath, baudRate }),
+  connectMegger:         (portOrOpts, baudRate) => {
+    if (typeof portOrOpts === 'object') {
+      return ipcRenderer.invoke('serial:connectMegger', portOrOpts);
+    }
+    return ipcRenderer.invoke('serial:connectMegger', { portPath: portOrOpts, baudRate });
+  },
   disconnectMegger:      ()                   => ipcRenderer.invoke('serial:disconnectMegger'),
-  connectMultimeter:     (portPath, baudRate) => ipcRenderer.invoke('serial:connectMultimeter',   { portPath, baudRate }),
+  connectMultimeter:     (portOrOpts, baudRate) => {
+    if (typeof portOrOpts === 'object') {
+      return ipcRenderer.invoke('serial:connectMultimeter', portOrOpts);
+    }
+    return ipcRenderer.invoke('serial:connectMultimeter', { portPath: portOrOpts, baudRate });
+  },
   disconnectMultimeter:  ()                   => ipcRenderer.invoke('serial:disconnectMultimeter'),
   sendMultimeterCommand: (mode, freq, secondary) => ipcRenderer.invoke('serial:sendMultimeterCommand', { mode, freq, secondary }),
 });
