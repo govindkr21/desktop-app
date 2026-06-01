@@ -45,8 +45,19 @@ function createRecord(d) {
     // Client Info:
     clientName: d.clientName || '',
     clientAddress: d.clientAddress || '',
+    clientPhone: d.clientPhone || '',
+    clientEmail: d.clientEmail || '',
+    clientContactName: d.clientContactName || '',
+    clientContactEmail: d.clientContactEmail || '',
+    clientNotes: d.clientNotes || '',
+
+    // Facility Info:
     facilityName: d.facilityName || '',
     facilityAddress: d.facilityAddress || '',
+    facilityManager: d.facilityManager || '',
+    facilityPhone: d.facilityPhone || '',
+    facilityNotes: d.facilityNotes || '',
+
     location: d.location || '',
     motorUtilityTag: d.motorUtilityTag || '',
     motorSerialNumber: d.motorSerialNumber || '',
@@ -80,6 +91,13 @@ function createRecord(d) {
     testVoltagePiDar: d.testVoltagePiDar || '500V',
     testVoltageStep: d.testVoltageStep || '',
     testVoltageRamp: d.testVoltageRamp || '',
+
+    // Baseline Toggles:
+    correctWindingTo20: d.correctWindingTo20 || false,
+    correctInsulationTo40: d.correctInsulationTo40 || false,
+
+    // Test temperature (used by insulation IEEE 43 correction)
+    temperature: d.temperature || '',
 
     notes: d.notes || '',
     createdAt: new Date().toISOString()
@@ -153,7 +171,7 @@ function getMultimeterData(recordId) {
 }
 
 function clearRecordTestData(recordId) {
-  data.insulation[recordId] = { PI: [], DAR: [], SV: [] };
+  data.insulation[recordId] = {};
   data.multimeter[recordId] = {};
   save();
   return { success: true };

@@ -16,7 +16,8 @@ const TABLE_SUFFIXES = [
   'RST-GND-Rotor'
 ];
 
-export default function InsulationTab({ record, demoMode = true, meggerStatus }) {
+export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange }) {
+  const correctInsulationTo40 = record?.correctInsulationTo40 || false;
   const [activeTab, setActiveTab] = useState('PI'); // 'PI' | 'DAR' | 'SV' | 'RAMP'
   const [tableData, setTableData] = useState({}); // { PI: { 'PI-R-GND-Stator': [...] } }
   const [selectedTable, setSelectedTable] = useState(''); // active table ID
@@ -26,8 +27,14 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
   const [status,        setStatus]        = useState('');
   
   // Advanced Diagnostics & Telemetry Watchdog
-  const [temperature, setTemperature] = useState('25');
+  const [temperature, setTemperature] = useState(record?.temperature || '25');
   const [telemetryAlert, setTelemetryAlert] = useState(false);
+
+  useEffect(() => {
+    if (record?.temperature) {
+      setTemperature(record.temperature);
+    }
+  }, [record?.temperature]);
 
   const simRef = useRef(null);
   const alertIntervalRef = useRef(null);
@@ -104,6 +111,10 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
       }, 1200);
     } else {
       // ── REAL DEVICE MODE ──
+      // Remove any previous listeners before adding new ones to prevent accumulation
+      api.removeAllListeners('megger:data');
+      api.removeAllListeners('megger:stopped');
+
       // 4-Second Inactivity Watchdog
       alertIntervalRef.current = setInterval(() => {
         if (Date.now() - lastPacketTime.current > 4000) {
@@ -167,7 +178,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
   const DDval = rows.length > 2 ? '1.38' : '—';
 
   // IEEE 43 Temperature Correction calculation to 40°C
-  const tempVal = parseFloat(temperature) || 25;
+  const tempVal = isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature);
   const Kt = Math.pow(0.5, (40 - tempVal) / 10);
   const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
   const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
@@ -254,15 +265,20 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
                   </td>
                 </tr>
               ) : (
-                tableRows.map((r, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '3px 4px', textAlign: 'center', fontFamily: 'monospace' }}>{r.time}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.voltage}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.actualVoltage}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.current}</td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{r.resistance?.toLocaleString()}</td>
-                  </tr>
-                ))
+                tableRows.map((r, idx) => {
+                  const tempVal = isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature);
+                  const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                  const displayRes = correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance;
+                  return (
+                    <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '3px 4px', textAlign: 'center', fontFamily: 'monospace' }}>{r.time}</td>
+                      <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.voltage}</td>
+                      <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.actualVoltage}</td>
+                      <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{r.current}</td>
+                      <td style={{ padding: '3px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{displayRes?.toLocaleString()}</td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -308,6 +324,24 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
               {demoMode ? '🎭 Demo Mode' : meggerOnline ? '✅ Megger Online' : '⚠️ Megger Offline'}
             </span>
           </div>
+
+          {/* Insulation Baseline correction toggle */}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: correctInsulationTo40 ? '#eff6ff' : '#f8fafc',
+            border: `1px solid ${correctInsulationTo40 ? '#bfdbfe' : '#cbd5e1'}`,
+            borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700,
+            color: correctInsulationTo40 ? '#1e40af' : '#475569', cursor: 'pointer',
+            transition: 'all 0.15s', marginLeft: 8
+          }}>
+            <input
+              type="checkbox"
+              checked={correctInsulationTo40}
+              onChange={e => onChange('correctInsulationTo40', e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Correct Insulation to Baseline 40°C (IEEE 43)</span>
+          </label>
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -385,7 +419,11 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
             <div style={{ flex: 1, minHeight: 0 }}>
               {rows.length > 1 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={rows} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
+                  <LineChart data={correctInsulationTo40 ? rows.map(r => {
+                    const tempVal = isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature);
+                    const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                    return { ...r, resistance: Math.round(r.resistance * Kt) };
+                  }) : rows} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis dataKey={xAxis} tick={{ fontSize: 9 }} />
                     <YAxis tick={{ fontSize: 9 }} />
@@ -412,13 +450,17 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus })
               </div>
 
               {/* Temperature Correction and Pass/Fail display */}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span style={{ fontSize: 10, fontWeight: 700, color: '#475569' }}>TEST TEMP</span>
                   <input
                     type="number"
                     value={temperature}
-                    onChange={e => setTemperature(e.target.value)}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setTemperature(v);
+                      onChange('temperature', v);
+                    }}
                     style={{ width: 48, border: '1px solid #cbd5e1', borderRadius: 4, padding: '3px 6px', fontSize: 11, fontWeight: 700, textAlign: 'center' }}
                   />
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>°C</span>

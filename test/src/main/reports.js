@@ -10,6 +10,128 @@ function sanitizeFilename(name) {
 }
 
 // ─────────────────────────────────────────────
+// VECTOR CHART RENDER ENGINE FOR PDFKIT
+// ─────────────────────────────────────────────
+function drawPDFChart(doc, title, startX, startY, width, height, rawData, xKey, yKey, xLabel, yLabel, isCorrectedMode, tempRecordValue) {
+  // 1. Prepare data (apply corrections dynamically if needed!)
+  const data = rawData.map(r => {
+    let val = r[yKey];
+    if (yKey === 'resistance' && isCorrectedMode && typeof val === 'number') {
+      const tempVal = isNaN(parseFloat(tempRecordValue)) ? 25 : parseFloat(tempRecordValue);
+      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+      val = Math.round(val * Kt);
+    }
+    return { ...r, [yKey]: val };
+  });
+
+  if (data.length === 0) return;
+
+  const marginL = 35;
+  const marginR = 10;
+  const marginT = 15;
+  const marginB = 20;
+
+  const plotX = startX + marginL;
+  const plotY = startY + marginT;
+  const plotW = width - marginL - marginR;
+  const plotH = height - marginT - marginB;
+
+  // Title
+  doc.fillColor('#1E3A8A').fontSize(7.5).font('Helvetica-Bold')
+     .text(title, startX, startY, { width: width, align: 'center' });
+
+  // Get data boundaries
+  const xValues = data.map(d => d[xKey]);
+  const yValues = data.map(d => d[yKey]);
+
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  const minY = 0;
+  const maxY = Math.max(...yValues) * 1.15 || 100; // 15% headroom
+
+  const scaleX = (x) => {
+    if (maxX === minX) return plotX;
+    return plotX + ((x - minX) / (maxX - minX)) * plotW;
+  };
+
+  const scaleY = (y) => {
+    if (maxY === minY) return plotY + plotH;
+    return plotY + plotH - ((y - minY) / (maxY - minY)) * plotH;
+  };
+
+  // Draw background box
+  doc.rect(plotX, plotY, plotW, plotH).fill('#F8FAFC');
+
+  // Draw 5 horizontal grid lines
+  const gridLines = 5;
+  doc.strokeColor('#E2E8F0').lineWidth(0.5);
+  for (let i = 0; i <= gridLines; i++) {
+    const yVal = minY + (i / gridLines) * (maxY - minY);
+    const py = scaleY(yVal);
+    
+    doc.moveTo(plotX, py).lineTo(plotX + plotW, py).dash(2, { space: 2 }).stroke();
+    
+    // Y-Axis label
+    doc.fillColor('#64748B').fontSize(5.5).font('Helvetica')
+       .text(Math.round(yVal).toLocaleString(), startX, py - 2.5, { width: marginL - 4, align: 'right' });
+  }
+  doc.undash();
+
+  // Draw X-Axis ticks and labels
+  const ticks = Math.min(data.length, 5);
+  doc.strokeColor('#CBD5E1').lineWidth(0.5);
+  for (let i = 0; i < ticks; i++) {
+    const idx = Math.floor((i / (ticks - 1)) * (data.length - 1));
+    const d = data[idx];
+    if (!d) continue;
+    const px = scaleX(d[xKey]);
+    
+    doc.moveTo(px, plotY + plotH).lineTo(px, plotY + plotH + 2).stroke();
+    
+    // X-Axis label
+    doc.fillColor('#64748B').fontSize(5.5).font('Helvetica')
+       .text(String(d[xKey]), px - 15, plotY + plotH + 4, { width: 30, align: 'center' });
+  }
+
+  // Draw axes
+  doc.strokeColor('#475569').lineWidth(0.75);
+  doc.moveTo(plotX, plotY).lineTo(plotX, plotY + plotH).lineTo(plotX + plotW, plotY + plotH).stroke();
+
+  // Fill area under line (soft gradient-like blue)
+  if (data.length > 1) {
+    doc.save();
+    doc.moveTo(scaleX(data[0][xKey]), plotY + plotH);
+    data.forEach(d => {
+      doc.lineTo(scaleX(d[xKey]), scaleY(d[yKey]));
+    });
+    doc.lineTo(scaleX(data[data.length - 1][xKey]), plotY + plotH);
+    doc.closePath();
+    doc.fillColor('#E1EFFE').opacity(0.35).fill();
+    doc.restore();
+  }
+
+  // Draw line plot
+  if (data.length > 0) {
+    doc.strokeColor('#1E40AF').lineWidth(1.25);
+    doc.moveTo(scaleX(data[0][xKey]), scaleY(data[0][yKey]));
+    for (let i = 1; i < data.length; i++) {
+      doc.lineTo(scaleX(data[i][xKey]), scaleY(data[i][yKey]));
+    }
+    doc.stroke();
+
+    // Draw dots
+    doc.fillColor('#1D4ED8');
+    data.forEach(d => {
+      doc.circle(scaleX(d[xKey]), scaleY(d[yKey]), 1.2).fill();
+    });
+  }
+
+  // Axis Titles
+  doc.fillColor('#475569').fontSize(5.5).font('Helvetica-Bold')
+     .text(xLabel, plotX, plotY + plotH + 12, { width: plotW, align: 'center' });
+}
+
+// ─────────────────────────────────────────────
 // EXCEL EXPORT
 // ─────────────────────────────────────────────
 async function exportExcel(recordId, mainWindow) {
@@ -80,8 +202,16 @@ async function exportExcel(recordId, mainWindow) {
   addSectionHeader('Client & Facility Information');
   addKeyValue('Client Name', record.clientName);
   addKeyValue('Client Address', record.clientAddress);
+  addKeyValue('Client Phone', record.clientPhone);
+  addKeyValue('Client Email', record.clientEmail);
+  addKeyValue('Client Contact Name', record.clientContactName);
+  addKeyValue('Client Contact Email', record.clientContactEmail);
+  addKeyValue('Client Notes', record.clientNotes);
   addKeyValue('Facility Name', record.facilityName);
   addKeyValue('Facility Address', record.facilityAddress);
+  addKeyValue('Facility Manager', record.facilityManager);
+  addKeyValue('Facility Phone', record.facilityPhone);
+  addKeyValue('Facility Notes', record.facilityNotes);
   addKeyValue('Test Location', record.location);
   addKeyValue('Operator Name', record.operatorName);
   addKeyValue('Test Date', record.date);
@@ -147,11 +277,17 @@ async function exportExcel(recordId, mainWindow) {
       const fKey = `${group}_res_${key}`;
       const data = mulData[fKey];
       if (data) {
+        let displayVal = data.value;
+        const isCorrected = record.correctWindingTo20 && typeof data.temperature === 'number';
+        if (isCorrected && typeof displayVal === 'number') {
+          const tempVal = isNaN(parseFloat(data.temperature)) ? 25 : parseFloat(data.temperature);
+          displayVal = parseFloat((displayVal * (254.5 / (234.5 + tempVal))).toFixed(3));
+        }
         const row = windingSheet.addRow({
           group: groupName,
           parameter: 'Resistance',
           phase: `Phase ${key}`,
-          value: data.value,
+          value: displayVal,
           unit: 'Ω',
           temp: data.temperature
         });
@@ -202,6 +338,14 @@ async function exportExcel(recordId, mainWindow) {
     });
   });
 
+  windingSheet.addRow([]);
+  const windingFootnoteText = record.correctWindingTo20
+    ? `* Note: The winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula (Baseline 20°C correction is ACTIVE).`
+    : `* Note: The winding resistance measurements shown above are raw/uncorrected values (Baseline 20°C correction is INACTIVE).`;
+  const windingFootnoteRow = windingSheet.addRow([windingFootnoteText]);
+  windingSheet.mergeCells(`A${windingFootnoteRow.number}:F${windingFootnoteRow.number}`);
+  windingFootnoteRow.getCell(1).font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF64748B' } };
+
   // ── Sheets 3-6: Insulation Tests (Megger) ──
   ['PI', 'DAR', 'SV', 'RAMP'].forEach(tab => {
     const tabData = insData[tab] || {};
@@ -243,13 +387,20 @@ async function exportExcel(recordId, mainWindow) {
       titleRow.height = 20;
 
       rows.forEach(r => {
+        let displayRes = r.resistance;
+        if (record.correctInsulationTo40 && typeof displayRes === 'number') {
+          const tempVal = isNaN(parseFloat(record.temperature)) ? 25 : parseFloat(record.temperature);
+          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+          displayRes = Math.round(displayRes * Kt);
+        }
+
         const row = sheet.addRow({
           table: '',
           time: r.time,
           voltage: r.voltage,
           actualVoltage: r.actualVoltage,
           current: r.current,
-          resistance: r.resistance
+          resistance: displayRes
         });
         row.eachCell((cell, colNum) => {
           cell.font = bodyFont;
@@ -280,6 +431,16 @@ async function exportExcel(recordId, mainWindow) {
       
       sheet.addRow([]); // Blank spacer
     });
+
+    sheet.addRow([]);
+    const tempVal = isNaN(parseFloat(record.temperature)) ? 25 : parseFloat(record.temperature);
+    const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+    const insFootnoteText = record.correctInsulationTo40
+      ? `* Note: The insulation resistance measurements shown above are corrected/baselined to 40°C using the IEEE 43 temperature correction formula (Test Temperature: ${tempVal}°C, Kt: ${Kt.toFixed(3)}).`
+      : `* Note: The insulation resistance measurements shown above are raw/uncorrected values (Baseline 40°C correction is inactive).`;
+    const insFootnoteRow = sheet.addRow([insFootnoteText]);
+    sheet.mergeCells(`A${insFootnoteRow.number}:F${insFootnoteRow.number}`);
+    insFootnoteRow.getCell(1).font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF64748B' } };
   });
 
   await workbook.xlsx.writeFile(filePath);
@@ -308,7 +469,6 @@ async function exportPDF(recordId, mainWindow) {
   });
   if (!filePath) return { success: false, reason: 'cancelled' };
 
-  // bufferPages: true is REQUIRED so we can later call switchToPage() to stamp footers
   const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
   const stream = fs.createWriteStream(filePath);
   doc.pipe(stream);
@@ -333,52 +493,95 @@ async function exportPDF(recordId, mainWindow) {
 
   drawHeader('ELECTRICAL MOTOR TESTING REPORT');
 
-  // Column Key-Value Helper
-  const drawTableSection = (title, items) => {
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(BLUE).text(title, 40);
+  // Column Key-Value Helper for Side-By-Side Columns
+  const drawTableSectionTwoCol = (title, items) => {
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLUE).text(title, 40);
     doc.moveDown(0.2);
-    const cellH = 16;
-    items.forEach(([label, value], i) => {
+    const cellH = 14;
+    
+    // Group normal pairs and full-width items
+    const normalItems = items.filter(([label]) => !label.toLowerCase().includes('notes') && !label.toLowerCase().includes('remark'));
+    const fullWidthItems = items.filter(([label]) => label.toLowerCase().includes('notes') || label.toLowerCase().includes('remark'));
+    
+    // Draw pairs
+    for (let i = 0; i < normalItems.length; i += 2) {
       const y = doc.y;
-      doc.rect(40, y, W * 0.4, cellH).fill(i % 2 === 0 ? LIGHT_BLUE : LGRAY);
-      doc.rect(40 + W * 0.4, y, W * 0.6, cellH).fill('#FFFFFF');
-      doc.fillColor(BLUE).fontSize(8).font('Helvetica-Bold').text(label, 46, y + 4);
-      doc.fillColor(DARK_GRAY).fontSize(8).font('Helvetica').text(String(value || '—'), 46 + W * 0.4, y + 4, { width: W * 0.6 - 12 });
+      
+      // Column 1 (Left)
+      const item1 = normalItems[i];
+      if (item1) {
+        const [label, value] = item1;
+        doc.rect(40, y, W * 0.22, cellH).fill(i % 4 === 0 ? LIGHT_BLUE : LGRAY);
+        doc.rect(40 + W * 0.22, y, W * 0.28, cellH).fill('#FFFFFF');
+        doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text(label, 44, y + 3.5, { width: W * 0.22 - 6 });
+        doc.fillColor(DARK_GRAY).fontSize(7).font('Helvetica').text(String(value || '—'), 44 + W * 0.22, y + 3.5, { width: W * 0.28 - 6, height: cellH - 4 });
+      }
+      
+      // Column 2 (Right)
+      const item2 = normalItems[i + 1];
+      if (item2) {
+        const [label, value] = item2;
+        doc.rect(40 + W * 0.5, y, W * 0.22, cellH).fill(i % 4 === 0 ? LIGHT_BLUE : LGRAY);
+        doc.rect(40 + W * 0.72, y, W * 0.28, cellH).fill('#FFFFFF');
+        doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text(label, 44 + W * 0.5, y + 3.5, { width: W * 0.22 - 6 });
+        doc.fillColor(DARK_GRAY).fontSize(7).font('Helvetica').text(String(value || '—'), 44 + W * 0.72, y + 3.5, { width: W * 0.28 - 6, height: cellH - 4 });
+      }
+      
       doc.y = y + cellH;
+    }
+    
+    // Draw full-width items (Notes / Remarks)
+    fullWidthItems.forEach(([label, value]) => {
+      const y = doc.y;
+      const height = 24; // taller box for notes
+      doc.rect(40, y, W * 0.22, height).fill(LIGHT_BLUE);
+      doc.rect(40 + W * 0.22, y, W * 0.78, height).fill('#FFFFFF');
+      doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text(label, 44, y + 6, { width: W * 0.22 - 6 });
+      doc.fillColor(DARK_GRAY).fontSize(7).font('Helvetica').text(String(value || '—'), 44 + W * 0.22, y + 4, { width: W * 0.78 - 12, height: height - 8 });
+      doc.y = y + height;
     });
-    doc.moveDown(0.6);
+    
+    doc.moveDown(0.5);
   };
 
-  drawTableSection('Client & Facility Information', [
+  drawTableSectionTwoCol('Client & Facility Information', [
     ['Client Name', record.clientName],
+    ['Client Phone', record.clientPhone],
     ['Client Address', record.clientAddress],
+    ['Client Email', record.clientEmail],
+    ['Client Contact Name', record.clientContactName],
+    ['Client Contact Email', record.clientContactEmail],
     ['Facility Name', record.facilityName],
+    ['Facility Phone', record.facilityPhone],
     ['Facility Address', record.facilityAddress],
+    ['Facility Manager', record.facilityManager],
     ['Test Location', record.location],
     ['Operator Name', record.operatorName],
     ['Test Date', record.date],
+    ['Client Notes', record.clientNotes],
+    ['Facility Notes', record.facilityNotes],
   ]);
 
-  drawTableSection('Motor Nameplate Specifications', [
+  drawTableSectionTwoCol('Motor Nameplate Specifications', [
     ['Equipment Type', record.equipmentType],
-    ['Power (kW)', record.powerKw],
-    ['Speed (RPM)', record.speedRpm],
-    ['Line Voltage (V)', record.lineVoltage],
     ['cos Fi (PF)', record.cosFi],
+    ['Power (kW)', record.powerKw],
     ['Nominal Current (A)', record.nominalCurrent],
-    ['Stator Winding Connection', record.statorConnection],
-    ['Rotor Winding Connection', record.rotorConnection],
+    ['Speed (RPM)', record.speedRpm],
+    ['Stator Connection', record.statorConnection],
+    ['Line Voltage (V)', record.lineVoltage],
+    ['Rotor Connection', record.rotorConnection],
     ['Rotor Voltage (V)', record.rotorVoltage],
-    ['Rotor Current (A)', record.rotorCurrent],
     ['Efficiency (%)', record.efficiency],
+    ['Rotor Current (A)', record.rotorCurrent],
     ['Insulation Class', record.insulationClass],
     ['Number of Rotor Bars', record.rotorBars],
     ['Remark', record.remark],
   ]);
 
-  drawTableSection('Offline Test Setup Configurations', [
+  drawTableSectionTwoCol('Offline Test Setup Configurations', [
     ['Testing Location', record.testingLocation],
-    ['Wire Marking (T1 / T2 / T3)', `${record.wireMarkingT1 || 'T1'} / ${record.wireMarkingT2 || 'T2'} / ${record.wireMarkingT3 || 'T3'}`],
+    ['Wire Marking', `${record.wireMarkingT1 || 'T1'} / ${record.wireMarkingT2 || 'T2'} / ${record.wireMarkingT3 || 'T3'}`],
     ['PI/DAR Test Voltage', record.testVoltagePiDar],
     ['STEP Test Voltage', record.testVoltageStep],
     ['RAMP Test Voltage', record.testVoltageRamp],
@@ -393,7 +596,7 @@ async function exportPDF(recordId, mainWindow) {
     doc.moveDown(0.2);
 
     const cols = [W * 0.25, W * 0.25, W * 0.25, W * 0.25];
-    const headers = ['Phase Line', 'Resistance (Ω)', 'Inductance (mH)', 'Capacitance (nF)'];
+    const headers = ['Phase Line', `Resistance (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}`, 'Inductance (mH)', 'Capacitance (nF)'];
     let y = doc.y;
     let x = 40;
 
@@ -413,9 +616,14 @@ async function exportPDF(recordId, mainWindow) {
       const iKey = `${groupPrefix}_ind_${phase}`;
       const cKey = `${groupPrefix}_cap_${phase}`;
 
-      const rVal = mulData[rKey]?.value;
+      let rVal = mulData[rKey]?.value;
       const iVal = mulData[iKey]?.value;
       const cVal = mulData[cKey]?.value;
+      const rTemp = isNaN(parseFloat(mulData[rKey]?.temperature)) ? 25 : parseFloat(mulData[rKey]?.temperature);
+
+      if (record.correctWindingTo20 && typeof rVal === 'number') {
+        rVal = parseFloat((rVal * (254.5 / (234.5 + rTemp))).toFixed(3));
+      }
 
       // Skip lines that have absolutely no readings captured
       if (rVal === undefined && iVal === undefined && cVal === undefined) return;
@@ -443,63 +651,67 @@ async function exportPDF(recordId, mainWindow) {
   drawWindingWGroup('🌀 Stator Winding Readings', 'stator');
   drawWindingWGroup('🌀 Rotor Winding Readings', 'rotor');
 
-  // Page 3+: Insulation Tests (Megger)
+  if (record.correctWindingTo20) {
+    doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
+       .text('* Note: Winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula.', 40, doc.y + 10, { width: W });
+  }
+
+  // Page 3+: Insulation Tests (Megger) with Side-by-Side vector charts
   ['PI', 'DAR', 'SV', 'RAMP'].forEach(tab => {
     const tabData = insData[tab] || {};
     const tablesPresent = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
 
     if (tablesPresent.length === 0) return;
 
-    doc.addPage();
-    drawHeader(`INSULATION TEST RESULTS — ${tab.toUpperCase()} MODE`);
-
     tablesPresent.forEach(tableId => {
       const rows = tabData[tableId];
 
-      if (doc.y > 600) {
-        doc.addPage();
-        drawHeader(`INSULATION TEST RESULTS — ${tab.toUpperCase()} MODE (CONT.)`);
-      }
+      doc.addPage();
+      drawHeader(`INSULATION TEST RESULTS — ${tab.toUpperCase()} MODE`);
 
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(BLUE).text(`Table ID: ${tableId}`, 40);
-      doc.moveDown(0.2);
+      doc.fontSize(10).font('Helvetica-Bold').fillColor(BLUE).text(`Test Table: ${tableId}`, 40);
+      doc.moveDown(0.4);
 
-      const colW = [W * 0.16, W * 0.20, W * 0.20, W * 0.22, W * 0.22];
-      const headers = ['Time (s)', 'Voltage (V)', 'Actual Voltage (V)', 'Current (uA)', 'Resistance (MΩ)'];
-      let y = doc.y;
+      // Define side-by-side columns
+      const leftW = W * 0.48;
+      const rightW = W * 0.48;
+      const gap = W * 0.04;
+      
+      const startY = doc.y;
+
+      // 1. LEFT COLUMN: Data Table
+      const colW = [leftW * 0.16, leftW * 0.20, leftW * 0.20, leftW * 0.22, leftW * 0.22];
+      const headers = ['Sec', 'V (V)', 'Act V', 'uA', `R (MΩ)${record.correctInsulationTo40 ? '*' : ''}`];
+      
+      let y = startY;
+      let x = 40;
 
       // Table header
-      let x = 40;
-      doc.rect(40, y, W, 16).fill(BLUE);
+      doc.rect(40, y, leftW, 14).fill(BLUE);
       headers.forEach((h, i) => {
-        doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold').text(h, x, y + 4, { width: colW[i], align: 'center' });
+        doc.fillColor('#FFFFFF').fontSize(6.5).font('Helvetica-Bold').text(h, x, y + 4, { width: colW[i], align: 'center' });
         x += colW[i];
       });
-      y += 16;
+      y += 14;
 
       rows.forEach((r, idx) => {
-        if (y > 720) {
-          doc.addPage();
-          drawHeader(`INSULATION TEST RESULTS — ${tab.toUpperCase()} (CONT.)`);
-          y = doc.y;
-          // Re-draw table header
-          x = 40;
-          doc.rect(40, y, W, 16).fill(BLUE);
-          headers.forEach((h, i) => {
-            doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold').text(h, x, y + 4, { width: colW[i], align: 'center' });
-            x += colW[i];
-          });
-          y += 16;
+        const rowH = 9.5;
+        doc.rect(40, y, leftW, rowH).fill(idx % 2 === 0 ? '#FFFFFF' : LGRAY);
+        x = 40;
+
+        let displayRes = r.resistance;
+        if (record.correctInsulationTo40 && typeof displayRes === 'number') {
+          const tempVal = isNaN(parseFloat(record.temperature)) ? 25 : parseFloat(record.temperature);
+          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+          displayRes = Math.round(displayRes * Kt);
         }
 
-        doc.rect(40, y, W, 12).fill(idx % 2 === 0 ? '#FFFFFF' : LGRAY);
-        x = 40;
-        [r.time, r.voltage, r.actualVoltage, r.current, r.resistance].forEach((val, i) => {
-          doc.fillColor(DARK_GRAY).fontSize(8).font('Helvetica')
+        [r.time, r.voltage, r.actualVoltage, r.current, displayRes].forEach((val, i) => {
+          doc.fillColor(DARK_GRAY).fontSize(6.5).font('Helvetica')
              .text(String(val), x, y + 2, { width: colW[i], align: 'center' });
           x += colW[i];
         });
-        y += 12;
+        y += rowH;
       });
 
       // Calculate coefficients
@@ -512,12 +724,48 @@ async function exportPDF(recordId, mainWindow) {
       if (r600 && r60) calcValues.push(`PI: ${(r600 / r60).toFixed(2)}`);
       calcValues.push(`DD: 1.38`);
 
-      doc.rect(40, y, W, 14).fill('#F1F5F9');
-      doc.fillColor(BLUE).fontSize(8).font('Helvetica-Bold')
-         .text(`Coefficients:  ${calcValues.join('   |   ')}`, 46, y + 3, { width: W - 12 });
-      y += 24;
+      doc.rect(40, y, leftW, 14).fill('#F1F5F9');
+      doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold')
+         .text(`Coefficients:  ${calcValues.join('   |   ')}`, 46, y + 3.5, { width: leftW - 12 });
+      y += 18;
 
-      doc.y = y;
+      // 2. RIGHT COLUMN: Vector Line Chart!
+      const chartX = 40 + leftW + gap;
+      const chartY = startY;
+      const chartW = rightW;
+      const chartH = 200; // elegant height
+
+      // Determine axes keys and labels
+      const yAxisKey = tab === 'SV' || tab === 'RAMP' ? 'current' : 'resistance';
+      const yAxisLabel = tab === 'SV' || tab === 'RAMP' ? 'Current (uA)' : 'Resistance (MΩ)';
+      const xAxisKey = tab === 'SV' ? 'voltage' : 'time';
+      const xAxisLabel = tab === 'SV' ? 'Voltage (V)' : 'Time (s)';
+
+      drawPDFChart(
+        doc,
+        `${tab} Diagnostic Plot`,
+        chartX,
+        chartY,
+        chartW,
+        chartH,
+        rows,
+        xAxisKey,
+        yAxisKey,
+        xAxisLabel,
+        yAxisLabel,
+        record.correctInsulationTo40,
+        record.temperature
+      );
+
+      // Restore y position
+      doc.y = Math.max(y, chartY + chartH) + 20;
+
+      if (record.correctInsulationTo40) {
+        const tempVal = isNaN(parseFloat(record.temperature)) ? 25 : parseFloat(record.temperature);
+        const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+        doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
+           .text(`* Note: Insulation measurements shown above are corrected/baselined to 40°C (Test Temp: ${tempVal}°C, Kt: ${Kt.toFixed(3)}).`, 40, doc.y, { width: W });
+      }
     });
   });
 
@@ -526,9 +774,15 @@ async function exportPDF(recordId, mainWindow) {
   for (let i = 0; i < pages.count; i++) {
     doc.switchToPage(i);
     doc.rect(0, doc.page.height - 30, doc.page.width, 30).fill('#F1F5F9');
+    
+    let footnoteParts = [];
+    if (record.correctWindingTo20) footnoteParts.push('Winding corrected to 20°C');
+    if (record.correctInsulationTo40) footnoteParts.push(`Insulation corrected to 40°C (IEEE 43, Test Temp: ${isNaN(parseFloat(record.temperature)) ? 25 : parseFloat(record.temperature)}°C)`);
+    const footnoteStr = footnoteParts.length > 0 ? ` [Note: ${footnoteParts.join(' & ')}]` : '';
+
     doc.fillColor(GRAY).fontSize(7).font('Helvetica')
        .text(
-         `Generated by Electrical Testing Suite  |  ${new Date().toLocaleString()}  |  Page ${i + 1} of ${pages.count}`,
+         `Generated by Electrical Testing Suite  |  ${new Date().toLocaleString()}  |  Page ${i + 1} of ${pages.count}${footnoteStr}`,
          40, doc.page.height - 20, { width: W, align: 'center' }
        );
   }

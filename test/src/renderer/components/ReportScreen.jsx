@@ -3,11 +3,12 @@ import { useState, useEffect } from 'react';
 
 const api = window.electronAPI;
 
-export default function ReportScreen({ record }) {
+export default function ReportScreen({ record, onChange }) {
   const [insData, setInsData] = useState({});
   const [mulData, setMulData] = useState({});
   const [exporting, setExporting] = useState('');
   const [message, setMessage] = useState(null);
+  const [lastFilePath, setLastFilePath] = useState(null);
 
   useEffect(() => {
     if (!record) return;
@@ -24,6 +25,7 @@ export default function ReportScreen({ record }) {
         : await api.exportPDF(record.id);
 
       if (result.success) {
+        setLastFilePath(result.filePath);
         setMessage({ type: 'success', text: `✅ ${type} report saved to: ${result.filePath}` });
       } else if (result.reason === 'cancelled') {
         setMessage({ type: 'info', text: 'Export cancelled.' });
@@ -97,9 +99,9 @@ export default function ReportScreen({ record }) {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center'
         }}>
           <span>{message.text}</span>
-          {message.type === 'success' && (
+          {message.type === 'success' && lastFilePath && (
             <button
-              onClick={() => openPath(message.text.split(': ')[1])}
+              onClick={() => openPath(lastFilePath)}
               style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 8px', fontSize: 10, cursor: 'pointer', fontWeight: 600 }}
             >
               📂 Show File
@@ -107,6 +109,57 @@ export default function ReportScreen({ record }) {
           )}
         </div>
       )}
+
+      {/* Baseline Settings Control Panel */}
+      <div style={{
+        background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
+        padding: '12px 16px', marginBottom: 16, display: 'flex', gap: 20, alignItems: 'center',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', display: 'flex', alignItems: 'center', gap: 6 }}>
+          ⚙️ DISPLAY MODE OPTIONS:
+        </span>
+        <div style={{ display: 'flex', gap: 16 }}>
+          {/* Winding Toggle */}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: record?.correctWindingTo20 ? '#eff6ff' : '#f8fafc',
+            border: `1px solid ${record?.correctWindingTo20 ? '#bfdbfe' : '#cbd5e1'}`,
+            borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 700,
+            color: record?.correctWindingTo20 ? '#1e40af' : '#475569', cursor: 'pointer',
+            transition: 'all 0.15s'
+          }}>
+            <input
+              type="checkbox"
+              checked={record?.correctWindingTo20 || false}
+              onChange={e => onChange('correctWindingTo20', e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Show Corrected Winding (20°C Copper)</span>
+          </label>
+
+          {/* Insulation Toggle */}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: record?.correctInsulationTo40 ? '#eff6ff' : '#f8fafc',
+            border: `1px solid ${record?.correctInsulationTo40 ? '#bfdbfe' : '#cbd5e1'}`,
+            borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 700,
+            color: record?.correctInsulationTo40 ? '#1e40af' : '#475569', cursor: 'pointer',
+            transition: 'all 0.15s'
+          }}>
+            <input
+              type="checkbox"
+              checked={record?.correctInsulationTo40 || false}
+              onChange={e => onChange('correctInsulationTo40', e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Show Corrected Insulation (40°C IEEE 43)</span>
+          </label>
+        </div>
+        <span style={{ fontSize: 10, color: '#94a3b8', fontStyle: 'italic', marginLeft: 'auto' }}>
+          * Uncheck to view raw, uncorrected readings in tables & charts.
+        </span>
+      </div>
 
       {/* Report Container */}
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.01)' }}>
@@ -126,44 +179,63 @@ export default function ReportScreen({ record }) {
           </div>
         </div>
 
-        {/* Client & Winding grid info */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1fr', gap: 16, marginBottom: 20 }}>
+        {/* Client, Facility, Motor & Testing 4-Column Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.1fr 1fr', gap: 12, marginBottom: 20 }}>
           
-          {/* Client Details */}
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
-            <h4 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', borderBottom: '1px solid #f1f5f9', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>CLIENT INFO</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-              <div><span style={{ color: '#94a3b8' }}>Client:</span> <strong>{record?.clientName || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Address:</span> <strong>{record?.clientAddress || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Facility:</span> <strong>{record?.facilityName || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Location:</span> <strong>{record?.location || '—'}</strong></div>
+          {/* LEVEL 1: Client Details */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+            <h4 style={{ fontSize: 11, fontWeight: 800, color: '#1e3a8a', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>👤 CLIENT PROFILE (L1)</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: '#334155' }}>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Client:</span> <strong>{record?.clientName || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Address:</span> <strong>{record?.clientAddress || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Phone:</span> <strong>{record?.clientPhone || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Email:</span> <strong>{record?.clientEmail || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Contact:</span> <strong>{record?.clientContactName || '—'} ({record?.clientContactEmail || '—'})</strong></div>
+              {record?.clientNotes && <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Notes:</span> <span style={{ fontSize: 9, fontStyle: 'italic' }}>{record.clientNotes}</span></div>}
             </div>
           </div>
 
-          {/* Motor Nameplate */}
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
-            <h4 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', borderBottom: '1px solid #f1f5f9', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>MOTOR SPECIFICATIONS</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 11 }}>
-              <div><span style={{ color: '#94a3b8' }}>Type:</span> <strong>{record?.equipmentType || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Utility Tag:</span> <strong>{record?.motorUtilityTag || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Power:</span> <strong>{record?.powerKw ? `${record.powerKw} kW` : '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Speed:</span> <strong>{record?.speedRpm ? `${record.speedRpm} RPM` : '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Voltage:</span> <strong>{record?.lineVoltage ? `${record.lineVoltage} V` : '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Current:</span> <strong>{record?.nominalCurrent ? `${record.nominalCurrent} A` : '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Class:</span> <strong>{record?.insulationClass || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Bars:</span> <strong>{record?.rotorBars || '—'}</strong></div>
+          {/* LEVEL 2: Facility Details */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+            <h4 style={{ fontSize: 11, fontWeight: 800, color: '#2563eb', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>🏭 FACILITY DETAILS (L2)</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: '#334155' }}>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Facility:</span> <strong>{record?.facilityName || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Address:</span> <strong>{record?.facilityAddress || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Manager:</span> <strong>{record?.facilityManager || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Phone:</span> <strong>{record?.facilityPhone || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Test Loc:</span> <strong>{record?.location || '—'}</strong></div>
+              {record?.facilityNotes && <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Notes:</span> <span style={{ fontSize: 9, fontStyle: 'italic' }}>{record.facilityNotes}</span></div>}
             </div>
           </div>
 
-          {/* Offline settings */}
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
-            <h4 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', borderBottom: '1px solid #f1f5f9', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>TEST CONFIGURATION</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-              <div><span style={{ color: '#94a3b8' }}>Location:</span> <strong>{record?.testingLocation || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>Wire Marks:</span> <strong>{`${record?.wireMarkingT1 || 'T1'}/${record?.wireMarkingT2 || 'T2'}/${record?.wireMarkingT3 || 'T3'}`}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>PI/DAR V:</span> <strong>{record?.testVoltagePiDar || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>STEP V:</span> <strong>{record?.testVoltageStep || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8' }}>RAMP V:</span> <strong>{record?.testVoltageRamp || '—'}</strong></div>
+          {/* LEVEL 3: Motor Specifications */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+            <h4 style={{ fontSize: 11, fontWeight: 800, color: '#3b82f6', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>⚙️ MOTOR SPECIFICATIONS (L3)</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 10, color: '#334155' }}>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Type:</span> <strong>{record?.equipmentType || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Utility Tag:</span> <strong>{record?.motorUtilityTag || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>S/N:</span> <strong>{record?.motorSerialNumber || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Standard:</span> <strong>{record?.manufacturingStandard || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Power:</span> <strong>{record?.powerKw ? `${record.powerKw} kW` : '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Speed:</span> <strong>{record?.speedRpm ? `${record.speedRpm} RPM` : '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Voltage:</span> <strong>{record?.lineVoltage ? `${record.lineVoltage} V` : '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Current:</span> <strong>{record?.nominalCurrent ? `${record.nominalCurrent} A` : '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Stator Conn:</span> <strong>{record?.statorConnection || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Rotor Conn:</span> <strong>{record?.rotorConnection || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Class:</span> <strong>{record?.insulationClass || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Rotor Bars:</span> <strong>{record?.rotorBars || '—'}</strong></div>
+            </div>
+          </div>
+
+          {/* LEVEL 4: Offline settings */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+            <h4 style={{ fontSize: 11, fontWeight: 800, color: '#60a5fa', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>🔌 TESTING CONDITIONS (L4)</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: '#334155' }}>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Location:</span> <strong>{record?.testingLocation || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Wire Marks:</span> <strong>{`${record?.wireMarkingT1 || 'T1'}/${record?.wireMarkingT2 || 'T2'}/${record?.wireMarkingT3 || 'T3'}`}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>PI/DAR V:</span> <strong>{record?.testVoltagePiDar || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>STEP V:</span> <strong>{record?.testVoltageStep || '—'}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>RAMP V:</span> <strong>{record?.testVoltageRamp || '—'}</strong></div>
             </div>
           </div>
 
@@ -178,7 +250,9 @@ export default function ReportScreen({ record }) {
                 <tr style={{ background: '#1e40af', color: '#fff' }}>
                   <th style={{ padding: '6px 8px', textAlign: 'left' }}>Winding Group</th>
                   <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>Resistance (Ω)</th>
+                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>
+                    Resistance (Ω) {record?.correctWindingTo20 ? ' @ 20°C' : ''}
+                  </th>
                   <th style={{ padding: '6px 8px', textAlign: 'right' }}>Inductance (mH)</th>
                   <th style={{ padding: '6px 8px', textAlign: 'right' }}>Capacitance (nF)</th>
                   <th style={{ padding: '6px 8px', textAlign: 'right' }}>Temp (°C)</th>
@@ -188,12 +262,18 @@ export default function ReportScreen({ record }) {
                 {['stator', 'rotor'].map((group, gIdx) => {
                   const phases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
                   return phases.map((phase, pIdx) => {
-                    const rVal = mulData[`${group}_res_${phase}`]?.value;
+                    const rValRaw = mulData[`${group}_res_${phase}`]?.value;
                     const iVal = mulData[`${group}_ind_${phase}`]?.value;
                     const cVal = mulData[`${group}_cap_${phase}`]?.value;
-                    const temp = mulData[`${group}_res_${phase}`]?.temperature || mulData[`${group}_ind_${phase}`]?.temperature || mulData[`${group}_cap_${phase}`]?.temperature || '';
+                    const temp = mulData[`${group}_res_${phase}`]?.temperature || mulData[`${group}_ind_${phase}`]?.temperature || mulData[`${group}_cap_${phase}`]?.temperature || 25;
 
-                    if (rVal === undefined && iVal === undefined && cVal === undefined) return null;
+                    let rVal = rValRaw;
+                    if (record?.correctWindingTo20 && rValRaw !== undefined) {
+                      const tempNum = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
+                      rVal = parseFloat((rValRaw * (254.5 / (234.5 + tempNum))).toFixed(3));
+                    }
+
+                    if (rValRaw === undefined && iVal === undefined && cVal === undefined) return null;
 
                     return (
                       <tr key={`${group}_${phase}`} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
@@ -250,19 +330,26 @@ export default function ReportScreen({ record }) {
                                 <th style={{ padding: '4px 8px', textAlign: 'right' }}>Voltage (V)</th>
                                 <th style={{ padding: '4px 8px', textAlign: 'right' }}>Actual V (V)</th>
                                 <th style={{ padding: '4px 8px', textAlign: 'right' }}>Current (uA)</th>
-                                <th style={{ padding: '4px 8px', textAlign: 'right' }}>Resistance (MΩ)</th>
+                                <th style={{ padding: '4px 8px', textAlign: 'right' }}>
+                                  Resistance (MΩ) {record?.correctInsulationTo40 ? ' @ 40°C' : ''}
+                                </th>
                               </tr>
                             </thead>
                             <tbody>
-                              {rows.map((r, idx) => (
-                                <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                  <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: 'monospace' }}>{r.time}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.voltage}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.actualVoltage}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.current}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{r.resistance?.toLocaleString()}</td>
-                                </tr>
-                              ))}
+                              {rows.map((r, idx) => {
+                                const tempVal = isNaN(parseFloat(record?.temperature)) ? 25 : parseFloat(record?.temperature);
+                                const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                                const displayRes = record?.correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance;
+                                return (
+                                  <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                    <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: 'monospace' }}>{r.time}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.voltage}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.actualVoltage}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.current}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{displayRes?.toLocaleString()}</td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -275,6 +362,18 @@ export default function ReportScreen({ record }) {
           </div>
         )}
 
+        {/* Report baseline footnotes */}
+        {(record?.correctWindingTo20 || record?.correctInsulationTo40) && (
+          <div style={{ marginTop: 20, background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 8, padding: '10px 14px', fontSize: 11, color: '#475569', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>ℹ️</span>
+            <span>
+              <strong>Note:</strong>
+              {record?.correctWindingTo20 && ` The measured winding resistance values are baselined to 20°C.`}
+              {record?.correctInsulationTo40 && ` The measured insulation resistance values are baselined to 40°C.`}
+            </span>
+          </div>
+        )}
+
         {!hasInsulation && !hasMulData && (
           <div style={{ textAlign: 'center', padding: '48px 0', color: '#cbd5e1' }}>
             <p style={{ fontSize: 36, margin: 0 }}>📋</p>
@@ -282,7 +381,6 @@ export default function ReportScreen({ record }) {
             <p style={{ fontSize: 11, margin: 0 }}>Run the Winding or Insulation test in Demo Mode to populate data.</p>
           </div>
         )}
-
       </div>
 
     </div>

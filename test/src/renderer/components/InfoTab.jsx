@@ -113,228 +113,261 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
     gap: 8,
   };
 
+  const TreeLine = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 20, margin: '2px 0' }}>
+      <div style={{ width: 3, background: '#3b82f6', flex: 1, borderRadius: 2 }}></div>
+    </div>
+  );
+
   return (
     <div style={{ padding: 16, height: 'calc(100vh - 112px)', overflowY: 'auto', boxSizing: 'border-box' }}>
       
-      {/* 4-Column Layout Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.1fr 1fr', gap: 16, minHeight: '520px', alignItems: 'stretch' }}>
+      {/* 2-Column Main Layout: Left = Hierarchy, Right = Motors List */}
+      <div style={{ display: 'grid', gridTemplateColumns: '2.6fr 1.4fr', gap: 16, alignItems: 'stretch' }}>
         
-        {/* COLUMN 1: Client Information */}
-        <div style={columnCardStyle}>
-          <h3 style={sectionHeaderStyle}>👤 Client Information</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflowY: 'auto' }}>
-            <div>
-              <label style={labelStyle}>CLIENT NAME</label>
-              <input
-                type="text"
-                value={record?.clientName || ''}
-                onChange={e => handleFieldChange('clientName', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. Acme Industries"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>CLIENT ADDRESS</label>
-              <input
-                type="text"
-                value={record?.clientAddress || ''}
-                onChange={e => handleFieldChange('clientAddress', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. 100 Main St, NY"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>FACILITY NAME</label>
-              <input
-                type="text"
-                value={record?.facilityName || ''}
-                onChange={e => handleFieldChange('facilityName', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. Power Station A"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>FACILITY ADDRESS</label>
-              <input
-                type="text"
-                value={record?.facilityAddress || ''}
-                onChange={e => handleFieldChange('facilityAddress', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. Sector 4 Plant"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>TEST LOCATION</label>
-              <input
-                type="text"
-                value={record?.location || ''}
-                onChange={e => handleFieldChange('location', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. Substation 3B"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>MOTOR UTILITY TAG</label>
-              <input
-                type="text"
-                value={record?.motorUtilityTag || ''}
-                onChange={e => handleFieldChange('motorUtilityTag', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. 10DW12P001"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>MOTOR SERIAL NUMBER</label>
-              <input
-                type="text"
-                value={record?.motorSerialNumber || ''}
-                onChange={e => handleFieldChange('motorSerialNumber', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. SN-8839201"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>MOTOR MANUFACTURER</label>
-              <input
-                type="text"
-                value={record?.motorManufacturer || ''}
-                onChange={e => handleFieldChange('motorManufacturer', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. Siemens / GE"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>MOTOR MODEL NUMBER</label>
-              <input
-                type="text"
-                value={record?.motorModelNumber || ''}
-                onChange={e => handleFieldChange('motorModelNumber', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. 1LA8313-2AC"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>MANUFACTURING STANDARD</label>
-              <input
-                type="text"
-                value={record?.manufacturingStandard || ''}
-                onChange={e => handleFieldChange('manufacturingStandard', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. NEMA MG1 / IEC"
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>TEST DATE</label>
-              <input
-                type="date"
-                value={record?.date || ''}
-                onChange={e => handleFieldChange('date', e.target.value)}
-                style={inputStyle}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* COLUMN 2: Motors List */}
-        <div style={columnCardStyle}>
-          <h3 style={sectionHeaderStyle}>📋 Client Motors List</h3>
+        {/* LEFT COLUMN: The 4-Level Nested Hierarchy */}
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           
-          <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 10px 0', lineHeight: 1.4 }}>
-            {clientNameFilter 
-              ? `Showing motors for Client: "${clientNameFilter}"` 
-              : "Enter a Client Name in Column 1 to filter motors."}
-          </p>
-
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fafafa' }}>
-            {clientMotors.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 10px', color: '#cbd5e1', fontSize: 12 }}>
-                {clientNameFilter ? "No motor files found. Modify or duplicate this motor to expand the list." : "No client selected."}
+          {/* LEVEL 1: CLIENT INFORMATION */}
+          <div style={columnCardStyle}>
+            <h3 style={sectionHeaderStyle}>
+              <span style={{ background: '#1e40af', color: '#fff', fontSize: 10, padding: '3px 8px', borderRadius: 4, marginRight: 8 }}>L1</span>
+              👤 Client Profile
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>CLIENT NAME</label>
+                <input
+                  type="text"
+                  value={record?.clientName || ''}
+                  onChange={e => handleFieldChange('clientName', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Acme Industries"
+                />
               </div>
-            ) : (
-              clientMotors.map(m => {
-                const isActive = m.id === record?.id;
-                return (
-                  <div
-                    key={m.id}
-                    style={{
-                      border: `1px solid ${isActive ? '#bfdbfe' : '#e2e8f0'}`,
-                      borderRadius: 8,
-                      padding: 10,
-                      background: isActive ? '#eff6ff' : '#fff',
-                      boxShadow: '0 1px 2px rgba(0,0,0,0.01)',
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                      <div>
-                        <p style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#1e40af' : '#1e293b', margin: 0 }}>
-                          {m.motorUtilityTag || '(No Utility Tag)'}
-                        </p>
-                        <p style={{ fontSize: 10, color: '#64748b', margin: '2px 0 0 0' }}>
-                          S/N: {m.motorSerialNumber || 'N/A'}
-                        </p>
-                      </div>
-                      <span style={{ fontSize: 9, color: '#94a3b8', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>
-                        {m.date || 'No Date'}
-                      </span>
-                    </div>
-
-                    {/* Action buttons inside the item */}
-                    <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
-                      <button
-                        onClick={() => onOpen(m)}
-                        style={{
-                          flex: 1, border: 'none', borderRadius: 4, background: isActive ? '#1e40af' : '#f1f5f9',
-                          color: isActive ? '#fff' : '#475569', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
-                        }}
-                      >
-                        👁️ Open
-                      </button>
-                      <button
-                        onClick={() => onDuplicate(m)}
-                        style={{
-                          flex: 1, border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff',
-                          color: '#475569', fontSize: 10, padding: '3px 6px', cursor: 'pointer', fontWeight: 600
-                        }}
-                      >
-                        📋 Copy
-                      </button>
-                      <button
-                        onClick={() => openRedoModal(m)}
-                        style={{
-                          flex: 1, border: 'none', borderRadius: 4, background: '#fee2e2',
-                          color: '#b91c1c', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
-                        }}
-                      >
-                        🔄 Re-do
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* COLUMN 3: Nameplate Data */}
-        <div style={columnCardStyle}>
-          <h3 style={sectionHeaderStyle}>⚙️ Motor Nameplate Data</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflowY: 'auto' }}>
-            <div>
-              <label style={labelStyle}>EQUIPMENT TYPE</label>
-              <select
-                value={record?.equipmentType || 'Induction Motor'}
-                onChange={e => handleFieldChange('equipmentType', e.target.value)}
-                style={selectStyle}
-              >
-                <option value="Induction Motor">Induction Motor</option>
-                <option value="Synchronous Motor">Synchronous Motor</option>
-                <option value="DC Motor">DC Motor</option>
-                <option value="Generator">Generator</option>
-                <option value="Other">Other</option>
-              </select>
+              <div>
+                <label style={labelStyle}>CLIENT ADDRESS</label>
+                <input
+                  type="text"
+                  value={record?.clientAddress || ''}
+                  onChange={e => handleFieldChange('clientAddress', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. 100 Main St, NY"
+                />
+              </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>PHONE NUMBER</label>
+                <input
+                  type="text"
+                  value={record?.clientPhone || ''}
+                  onChange={e => handleFieldChange('clientPhone', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. +1 555-0199"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>EMAIL ADDRESS</label>
+                <input
+                  type="email"
+                  value={record?.clientEmail || ''}
+                  onChange={e => handleFieldChange('clientEmail', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. client@example.com"
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>CONTACT NAME</label>
+                <input
+                  type="text"
+                  value={record?.clientContactName || ''}
+                  onChange={e => handleFieldChange('clientContactName', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. John Doe"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>CONTACT EMAIL ADDRESS</label>
+                <input
+                  type="email"
+                  value={record?.clientContactEmail || ''}
+                  onChange={e => handleFieldChange('clientContactEmail', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. jdoe@example.com"
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <label style={labelStyle}>CLIENT NOTES</label>
+              <textarea
+                value={record?.clientNotes || ''}
+                onChange={e => handleFieldChange('clientNotes', e.target.value)}
+                style={{ ...inputStyle, resize: 'vertical' }}
+                rows={2}
+                placeholder="Billing preferences, schedules, emergency contacts..."
+              />
+            </div>
+          </div>
+
+          <TreeLine />
+
+          {/* LEVEL 2: FACILITY DETAILS */}
+          <div style={{ ...columnCardStyle, marginLeft: 20 }}>
+            <h3 style={sectionHeaderStyle}>
+              <span style={{ background: '#2563eb', color: '#fff', fontSize: 10, padding: '3px 8px', borderRadius: 4, marginRight: 8 }}>L2</span>
+              🏭 Facility Details
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>FACILITY NAME</label>
+                <input
+                  type="text"
+                  value={record?.facilityName || ''}
+                  onChange={e => handleFieldChange('facilityName', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Power Station A"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>FACILITY ADDRESS</label>
+                <input
+                  type="text"
+                  value={record?.facilityAddress || ''}
+                  onChange={e => handleFieldChange('facilityAddress', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Sector 4 Plant"
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>FACILITY MANAGER</label>
+                <input
+                  type="text"
+                  value={record?.facilityManager || ''}
+                  onChange={e => handleFieldChange('facilityManager', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Jane Smith"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>FACILITY CONTACT NUMBER</label>
+                <input
+                  type="text"
+                  value={record?.facilityPhone || ''}
+                  onChange={e => handleFieldChange('facilityPhone', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. +1 555-0244"
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>TEST LOCATION</label>
+                <input
+                  type="text"
+                  value={record?.location || ''}
+                  onChange={e => handleFieldChange('location', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Substation 3B"
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <label style={labelStyle}>FACILITY NOTES</label>
+              <textarea
+                value={record?.facilityNotes || ''}
+                onChange={e => handleFieldChange('facilityNotes', e.target.value)}
+                style={{ ...inputStyle, resize: 'vertical' }}
+                rows={2}
+                placeholder="Safety instructions, security gate codes, clearance permits..."
+              />
+            </div>
+          </div>
+
+          <TreeLine />
+
+          {/* LEVEL 3: MOTOR SPECIFICATIONS */}
+          <div style={{ ...columnCardStyle, marginLeft: 40 }}>
+            <h3 style={sectionHeaderStyle}>
+              <span style={{ background: '#3b82f6', color: '#fff', fontSize: 10, padding: '3px 8px', borderRadius: 4, marginRight: 8 }}>L3</span>
+              ⚙️ Motor Nameplate & Utility Info
+            </h3>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>MOTOR UTILITY TAG</label>
+                <input
+                  type="text"
+                  value={record?.motorUtilityTag || ''}
+                  onChange={e => handleFieldChange('motorUtilityTag', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. 10DW12P001"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>MOTOR SERIAL NUMBER</label>
+                <input
+                  type="text"
+                  value={record?.motorSerialNumber || ''}
+                  onChange={e => handleFieldChange('motorSerialNumber', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. SN-8839201"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>EQUIPMENT TYPE</label>
+                <select
+                  value={record?.equipmentType || 'Induction Motor'}
+                  onChange={e => handleFieldChange('equipmentType', e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="Induction Motor">Induction Motor</option>
+                  <option value="Synchronous Motor">Synchronous Motor</option>
+                  <option value="DC Motor">DC Motor</option>
+                  <option value="Generator">Generator</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>MOTOR MANUFACTURER</label>
+                <input
+                  type="text"
+                  value={record?.motorManufacturer || ''}
+                  onChange={e => handleFieldChange('motorManufacturer', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Siemens"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>MOTOR MODEL NUMBER</label>
+                <input
+                  type="text"
+                  value={record?.motorModelNumber || ''}
+                  onChange={e => handleFieldChange('motorModelNumber', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. 1LA8313-2AC"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>MANUFACTURING STANDARD</label>
+                <input
+                  type="text"
+                  value={record?.manufacturingStandard || ''}
+                  onChange={e => handleFieldChange('manufacturingStandard', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. NEMA MG1"
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginTop: 10 }}>
               <div>
                 <label style={labelStyle}>POWER (kW)</label>
                 <input
@@ -342,7 +375,7 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.powerKw || ''}
                   onChange={e => handleFieldChange('powerKw', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 150"
+                  placeholder="150"
                 />
               </div>
               <div>
@@ -352,11 +385,9 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.speedRpm || ''}
                   onChange={e => handleFieldChange('speedRpm', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 1755"
+                  placeholder="1755"
                 />
               </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
                 <label style={labelStyle}>LINE VOLTAGE (V)</label>
                 <input
@@ -364,7 +395,7 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.lineVoltage || ''}
                   onChange={e => handleFieldChange('lineVoltage', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 600"
+                  placeholder="600"
                 />
               </div>
               <div>
@@ -375,11 +406,12 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.cosFi || ''}
                   onChange={e => handleFieldChange('cosFi', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 0.85"
+                  placeholder="0.85"
                 />
               </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginTop: 10 }}>
               <div>
                 <label style={labelStyle}>NOMINAL CURRENT (A)</label>
                 <input
@@ -387,7 +419,7 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.nominalCurrent || ''}
                   onChange={e => handleFieldChange('nominalCurrent', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 50"
+                  placeholder="50"
                 />
               </div>
               <div>
@@ -397,11 +429,9 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.efficiency || ''}
                   onChange={e => handleFieldChange('efficiency', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 92"
+                  placeholder="92"
                 />
               </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
                 <label style={labelStyle}>STATOR CONNECTION</label>
                 <select
@@ -429,7 +459,8 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                 </select>
               </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginTop: 10 }}>
               <div>
                 <label style={labelStyle}>ROTOR VOLTAGE (V)</label>
                 <input
@@ -437,7 +468,7 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.rotorVoltage || ''}
                   onChange={e => handleFieldChange('rotorVoltage', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 12"
+                  placeholder="12"
                 />
               </div>
               <div>
@@ -447,11 +478,9 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.rotorCurrent || ''}
                   onChange={e => handleFieldChange('rotorCurrent', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 0"
+                  placeholder="0"
                 />
               </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
                 <label style={labelStyle}>INSULATION CLASS</label>
                 <select
@@ -472,46 +501,72 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   value={record?.rotorBars || ''}
                   onChange={e => handleFieldChange('rotorBars', e.target.value)}
                   style={inputStyle}
-                  placeholder="e.g. 7"
+                  placeholder="7"
                 />
               </div>
             </div>
-            <div>
+
+            <div style={{ marginTop: 10 }}>
               <label style={labelStyle}>REMARK / NOTE</label>
               <textarea
                 value={record?.remark || ''}
                 onChange={e => handleFieldChange('remark', e.target.value)}
                 style={{ ...inputStyle, resize: 'vertical' }}
-                rows={3}
+                rows={2}
                 placeholder="Winding condition, visible issues..."
               />
             </div>
           </div>
-        </div>
 
-        {/* COLUMN 4: Offline Tests Config */}
-        <div style={columnCardStyle}>
-          <h3 style={sectionHeaderStyle}>🔌 Offline Test Configurations</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflowY: 'auto' }}>
-            <div>
-              <label style={labelStyle}>TESTING LOCATION</label>
-              <select
-                value={record?.testingLocation || 'Motor Junction Box'}
-                onChange={e => handleFieldChange('testingLocation', e.target.value)}
-                style={selectStyle}
-              >
-                <option value="Motor Junction Box">Motor Junction Box</option>
-                <option value="Disconnect Switch">Disconnect Switch</option>
-                <option value="MCC">MCC</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
+          <TreeLine />
+
+          {/* LEVEL 4: TESTING SPECIFICATIONS & SETUP */}
+          <div style={{ ...columnCardStyle, marginLeft: 60 }}>
+            <h3 style={sectionHeaderStyle}>
+              <span style={{ background: '#60a5fa', color: '#fff', fontSize: 10, padding: '3px 8px', borderRadius: 4, marginRight: 8 }}>L4</span>
+              🔌 Motor Testing Conditions
+            </h3>
             
-            <div style={{ border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fafafa' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>TESTING LOCATION</label>
+                <select
+                  value={record?.testingLocation || 'Motor Junction Box'}
+                  onChange={e => handleFieldChange('testingLocation', e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="Motor Junction Box">Motor Junction Box</option>
+                  <option value="Disconnect Switch">Disconnect Switch</option>
+                  <option value="MCC">MCC</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>TEST DATE</label>
+                <input
+                  type="date"
+                  value={record?.date || ''}
+                  onChange={e => handleFieldChange('date', e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>OPERATOR NAME</label>
+                <input
+                  type="text"
+                  value={record?.operatorName || ''}
+                  onChange={e => handleFieldChange('operatorName', e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Technician A"
+                />
+              </div>
+            </div>
+
+            <div style={{ border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fafafa', marginTop: 10 }}>
               <label style={{ ...labelStyle, color: '#334155', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginBottom: 8 }}>WIRE MARKING</label>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, width: 20, color: '#475569' }}>T1:</span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, width: 16, color: '#475569' }}>T1:</span>
                   <input
                     type="text"
                     value={record?.wireMarkingT1 || ''}
@@ -520,8 +575,8 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                     placeholder="U1 / L1"
                   />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, width: 20, color: '#475569' }}>T2:</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, width: 16, color: '#475569' }}>T2:</span>
                   <input
                     type="text"
                     value={record?.wireMarkingT2 || ''}
@@ -530,8 +585,8 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                     placeholder="V1 / L2"
                   />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, width: 20, color: '#475569' }}>T3:</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, width: 16, color: '#475569' }}>T3:</span>
                   <input
                     type="text"
                     value={record?.wireMarkingT3 || ''}
@@ -543,41 +598,133 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
               </div>
             </div>
 
-            <div>
-              <label style={labelStyle}>PI / DAR TEST VOLTAGE</label>
-              <select
-                value={record?.testVoltagePiDar || '500V'}
-                onChange={e => handleFieldChange('testVoltagePiDar', e.target.value)}
-                style={selectStyle}
-              >
-                <option value="250V">250V</option>
-                <option value="500V">500V</option>
-                <option value="1kV">1kV</option>
-                <option value="2.5kV">2.5kV</option>
-                <option value="5kV">5kV</option>
-              </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 10 }}>
+              <div>
+                <label style={labelStyle}>PI / DAR TEST VOLTAGE</label>
+                <select
+                  value={record?.testVoltagePiDar || '500V'}
+                  onChange={e => handleFieldChange('testVoltagePiDar', e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="250V">250V</option>
+                  <option value="500V">500V</option>
+                  <option value="1kV">1kV</option>
+                  <option value="2.5kV">2.5kV</option>
+                  <option value="5kV">5kV</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>STEP TEST VOLTAGE</label>
+                <select
+                  value={record?.testVoltageStep || '500V'}
+                  onChange={e => handleFieldChange('testVoltageStep', e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="250V">250V</option>
+                  <option value="500V">500V</option>
+                  <option value="1kV">1kV</option>
+                  <option value="2.5kV">2.5kV</option>
+                  <option value="5kV">5kV</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>RAMP TEST VOLTAGE</label>
+                <select
+                  value={record?.testVoltageRamp || '500V'}
+                  onChange={e => handleFieldChange('testVoltageRamp', e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="250V">250V</option>
+                  <option value="500V">500V</option>
+                  <option value="1kV">1kV</option>
+                  <option value="2.5kV">2.5kV</option>
+                  <option value="5kV">5kV</option>
+                </select>
+              </div>
             </div>
+          </div>
 
-            <div>
-              <label style={labelStyle}>STEP TEST VOLTAGE</label>
-              <input
-                type="text"
-                value={record?.testVoltageStep || ''}
-                onChange={e => handleFieldChange('testVoltageStep', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. 500V / 1kV / 1.5kV"
-              />
-            </div>
+        </div>
 
-            <div>
-              <label style={labelStyle}>RAMP TEST VOLTAGE</label>
-              <input
-                type="text"
-                value={record?.testVoltageRamp || ''}
-                onChange={e => handleFieldChange('testVoltageRamp', e.target.value)}
-                style={inputStyle}
-                placeholder="e.g. 0 to 5kV Ramp"
-              />
+        {/* RIGHT COLUMN: Motors List */}
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          <div style={{ ...columnCardStyle, height: '100%' }}>
+            <h3 style={sectionHeaderStyle}>📋 Client Motors List</h3>
+            
+            <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 10px 0', lineHeight: 1.4 }}>
+              {clientNameFilter 
+                ? `Showing motors for Client: "${clientNameFilter}"` 
+                : "Enter a Client Name to filter motors."}
+            </p>
+
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fafafa' }}>
+              {clientMotors.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 10px', color: '#cbd5e1', fontSize: 12 }}>
+                  {clientNameFilter ? "No motor files found. Modify or duplicate this motor to expand the list." : "No client selected."}
+                </div>
+              ) : (
+                clientMotors.map(m => {
+                  const isActive = m.id === record?.id;
+                  return (
+                    <div
+                      key={m.id}
+                      style={{
+                        border: `1px solid ${isActive ? '#bfdbfe' : '#e2e8f0'}`,
+                        borderRadius: 8,
+                        padding: 10,
+                        background: isActive ? '#eff6ff' : '#fff',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.01)',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                        <div>
+                          <p style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#1e40af' : '#1e293b', margin: 0 }}>
+                            {m.motorUtilityTag || '(No Utility Tag)'}
+                          </p>
+                          <p style={{ fontSize: 10, color: '#64748b', margin: '2px 0 0 0' }}>
+                            S/N: {m.motorSerialNumber || 'N/A'}
+                          </p>
+                        </div>
+                        <span style={{ fontSize: 9, color: '#94a3b8', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>
+                          {m.date || 'No Date'}
+                        </span>
+                      </div>
+
+                      {/* Action buttons inside the item */}
+                      <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
+                        <button
+                          onClick={() => onOpen(m)}
+                          style={{
+                            flex: 1, border: 'none', borderRadius: 4, background: isActive ? '#1e40af' : '#f1f5f9',
+                            color: isActive ? '#fff' : '#475569', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
+                          }}
+                        >
+                          👁️ Open
+                        </button>
+                        <button
+                          onClick={() => onDuplicate(m)}
+                          style={{
+                            flex: 1, border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff',
+                            color: '#475569', fontSize: 10, padding: '3px 6px', cursor: 'pointer', fontWeight: 600
+                          }}
+                        >
+                          📋 Copy
+                        </button>
+                        <button
+                          onClick={() => openRedoModal(m)}
+                          style={{
+                            flex: 1, border: 'none', borderRadius: 4, background: '#fee2e2',
+                            color: '#b91c1c', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
+                          }}
+                        >
+                          🔄 Re-do
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>

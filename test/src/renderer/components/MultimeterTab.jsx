@@ -51,20 +51,31 @@ const S = {
 };
 
 // ── Reusable measurement group ───────────────────────────
-function MeasGroup({ title, keys, prefix, unit, captured, onCapture }) {
+function MeasGroup({ title, keys, prefix, unit, captured, onCapture, correctWindingTo20, temp }) {
   return (
     <div style={S.sectionBox}>
       <span style={S.sectionTitle}>{title}</span>
       {keys.map(k => {
         const fKey = `${prefix}_${k}`;
         const val = captured[fKey];
+        
+        let displayVal = '';
+        if (val !== undefined) {
+          if (correctWindingTo20 && prefix.includes('_res')) {
+            const tempVal = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
+            displayVal = parseFloat((val * (254.5 / (234.5 + tempVal))).toFixed(3));
+          } else {
+            displayVal = val;
+          }
+        }
+
         return (
           <div key={k} style={S.row}>
             <span style={S.phaseLabel}>Phase {k}</span>
             <input
               readOnly
               type="text"
-              value={val !== undefined ? val : ''}
+              value={displayVal}
               onClick={() => onCapture(fKey)}
               style={S.captureInput(val !== undefined)}
               placeholder="—"
@@ -211,7 +222,8 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
 }
 
 // ── Main component ────────────────────────────────────────
-export default function MultimeterTab({ record, demoMode = true, multimeterStatus }) {
+export default function MultimeterTab({ record, demoMode = true, multimeterStatus, onChange }) {
+  const correctWindingTo20 = record?.correctWindingTo20 || false;
   const [mode,      setMode]      = useState('R');
   const [freq,      setFreq]      = useState('120Hz');
   const [secondary, setSecondary] = useState('D');
@@ -388,6 +400,24 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
             </div>
           ))}
 
+          {/* Winding Resistance Baseline correction toggle */}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: correctWindingTo20 ? '#eff6ff' : '#f8fafc',
+            border: `1px solid ${correctWindingTo20 ? '#bfdbfe' : '#cbd5e1'}`,
+            borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700,
+            color: correctWindingTo20 ? '#1e40af' : '#475569', cursor: 'pointer',
+            transition: 'all 0.15s'
+          }}>
+            <input
+              type="checkbox"
+              checked={correctWindingTo20}
+              onChange={e => onChange('correctWindingTo20', e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Correct Winding to Baseline 20°C (Copper)</span>
+          </label>
+
           {/* RLC Setup button */}
           <button
             onClick={() => setShowSetup(true)}
@@ -423,7 +453,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           {/* Stator grid: Resistance+Inductance left, Capacitance right */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="stator_res" unit="ohm" captured={captured} onCapture={handleCapture} />
+              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="stator_res" unit="ohm" captured={captured} onCapture={handleCapture} correctWindingTo20={correctWindingTo20} temp={temperature} />
               <MeasGroup title="Winding Inductance" keys={IND_KEYS} prefix="stator_ind" unit="mH"  captured={captured} onCapture={handleCapture} />
             </div>
             <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="stator_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
@@ -486,7 +516,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="rotor_res" unit="ohm" captured={captured} onCapture={handleCapture} />
+              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="rotor_res" unit="ohm" captured={captured} onCapture={handleCapture} correctWindingTo20={correctWindingTo20} temp={temperature} />
               <MeasGroup title="Winding Inductance" keys={IND_KEYS} prefix="rotor_ind" unit="mH"  captured={captured} onCapture={handleCapture} />
             </div>
             <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="rotor_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
@@ -511,7 +541,10 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
               <span style={{ fontSize: 9, color: '#475569', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Multimeter Readout</span>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                 <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#10b981', letterSpacing: -1 }}>
-                  {liveValue.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                  {((correctWindingTo20 && mode === 'R')
+                    ? parseFloat((liveValue * (254.5 / (234.5 + (isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature))))).toFixed(3))
+                    : liveValue
+                  ).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
                 </span>
                 <span style={{ fontSize: 14, fontWeight: 700, color: '#4ade80' }}>{unit}</span>
               </div>

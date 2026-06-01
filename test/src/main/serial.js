@@ -382,6 +382,7 @@ function buildCommand(mode, frequency, secondary) {
 }
 
 function parseMultimeterLine(line) {
+  console.log('[Multimeter] Raw line:', line);
   const val = parseFloat(line.trim());
   return isNaN(val) ? null : val;
 }

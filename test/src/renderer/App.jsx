@@ -311,6 +311,7 @@ export default function App() {
             demoMode={demoMode}
             meggerStatus={meggerStatus}
             setMeggerStatus={setMeggerStatus}
+            onChange={handleInfoChange}
           />
         )}
         {activeTab === 'multimeter' && (
@@ -319,9 +320,10 @@ export default function App() {
             demoMode={demoMode}
             multimeterStatus={multimeterStatus}
             setMultimeterStatus={setMultimeterStatus}
+            onChange={handleInfoChange}
           />
         )}
-        {activeTab === 'report'     && <ReportScreen  record={record} />}
+        {activeTab === 'report'     && <ReportScreen  record={record} onChange={handleInfoChange} />}
       </div>
 
     </div>
