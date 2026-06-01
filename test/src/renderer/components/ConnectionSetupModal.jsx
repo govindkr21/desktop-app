@@ -28,7 +28,48 @@ const cardStyle = {
   flexDirection: 'column',
   gap: 12,
   boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+  minWidth: 0,
 };
+
+const RAW_LOG_MAX = 80;
+
+function RawSerialLog({ title, lines, onClear }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minHeight: 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 9, fontWeight: 700, color: '#475569', letterSpacing: 0.5, textTransform: 'uppercase' }}>
+          {title}
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          style={{
+            fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+            border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: 'pointer',
+          }}
+        >
+          Clear
+        </button>
+      </div>
+      <div style={{
+        height: 120, overflowY: 'auto', background: '#0f172a', borderRadius: 6,
+        padding: '6px 8px', fontFamily: 'Consolas, Monaco, monospace', fontSize: 10,
+        lineHeight: 1.45, color: '#86efac', border: '1px solid #334155',
+      }}>
+        {lines.length === 0 ? (
+          <span style={{ color: '#64748b' }}>Waiting for serial data…</span>
+        ) : (
+          lines.map((entry, i) => (
+            <div key={`${entry.ts}-${i}`} style={{ marginBottom: 2, wordBreak: 'break-all' }}>
+              <span style={{ color: '#94a3b8' }}>[{entry.ts}] </span>
+              SERIAL: {entry.text}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function ConnectionSetupModal({
   meggerStatus, setMeggerStatus,
@@ -42,6 +83,8 @@ export default function ConnectionSetupModal({
   const [scanning, setScanning] = useState(false);
   const [errorMegger, setErrorMegger] = useState('');
   const [errorMulti, setErrorMulti] = useState('');
+  const [meggerRawLines, setMeggerRawLines] = useState([]);
+  const [multiRawLines, setMultiRawLines] = useState([]);
 
   // Megger configurations
   const [mConnType, setMConnType] = useState('serial');
@@ -60,6 +103,20 @@ export default function ConnectionSetupModal({
   // Scan available COM ports on mount
   useEffect(() => {
     scanPorts();
+  }, []);
+
+  function appendRawLine(setter, chunk) {
+    const ts = new Date().toLocaleTimeString();
+    setter(prev => [...prev.slice(-(RAW_LOG_MAX - 1)), { ts, text: chunk }]);
+  }
+
+  useEffect(() => {
+    api.onMeggerRaw((chunk) => appendRawLine(setMeggerRawLines, chunk));
+    api.onMultimeterRaw((chunk) => appendRawLine(setMultiRawLines, chunk));
+    return () => {
+      api.removeAllListeners('megger:raw');
+      api.removeAllListeners('multimeter:raw');
+    };
   }, []);
 
   async function scanPorts() {
@@ -209,7 +266,7 @@ export default function ConnectionSetupModal({
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000,
     }}>
       <div style={{
-        background: '#f8fafc', borderRadius: 16, width: 780,
+        background: '#f8fafc', borderRadius: 16, width: 860, maxHeight: '92vh',
         boxShadow: '0 24px 48px rgba(0,0,0,0.3)', border: '1px solid #e2e8f0', overflow: 'hidden',
         display: 'flex', flexDirection: 'column'
       }}>
@@ -273,10 +330,16 @@ export default function ConnectionSetupModal({
 
               {/* Connected details or controls */}
               {meggerStatus === 'connected' ? (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 8, background: '#f0fdf4', borderRadius: 8, padding: '24px 10px', border: '1px solid #dcfce7' }}>
-                  <span style={{ fontSize: 32 }}>✅</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>Megger MIT 525 Active</span>
-                  <span style={{ fontSize: 11, color: '#166534', fontFamily: 'monospace', fontWeight: 600 }}>Port: {meggerPort}</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, background: '#f0fdf4', borderRadius: 8, padding: '12px 10px', border: '1px solid #dcfce7' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>Megger MIT 525 Active</span>
+                    <span style={{ fontSize: 11, color: '#166534', fontFamily: 'monospace', fontWeight: 600 }}>Port: {meggerPort}</span>
+                  </div>
+                  <RawSerialLog
+                    title="Live raw stream"
+                    lines={meggerRawLines}
+                    onClear={() => setMeggerRawLines([])}
+                  />
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, opacity: meggerStatus === 'connecting' ? 0.6 : 1, pointerEvents: meggerStatus === 'connecting' ? 'none' : 'auto' }}>
@@ -392,10 +455,16 @@ export default function ConnectionSetupModal({
 
               {/* Connected details or controls */}
               {multimeterStatus === 'connected' ? (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 8, background: '#f0fdf4', borderRadius: 8, padding: '24px 10px', border: '1px solid #dcfce7' }}>
-                  <span style={{ fontSize: 32 }}>✅</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>LCR Multimeter Active</span>
-                  <span style={{ fontSize: 11, color: '#166534', fontFamily: 'monospace', fontWeight: 600 }}>Port: {multimeterPort}</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, background: '#f0fdf4', borderRadius: 8, padding: '12px 10px', border: '1px solid #dcfce7' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>LCR Multimeter Active</span>
+                    <span style={{ fontSize: 11, color: '#166534', fontFamily: 'monospace', fontWeight: 600 }}>Port: {multimeterPort}</span>
+                  </div>
+                  <RawSerialLog
+                    title="Live raw stream"
+                    lines={multiRawLines}
+                    onClear={() => setMultiRawLines([])}
+                  />
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, opacity: multimeterStatus === 'connecting' ? 0.6 : 1, pointerEvents: multimeterStatus === 'connecting' ? 'none' : 'auto' }}>

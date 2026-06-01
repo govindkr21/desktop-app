@@ -33,9 +33,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Serial port events (Phase 5 - device communication) ──
   // These will be wired up when serial.js is implemented
   onMeggerData:      (callback) => ipcRenderer.on('megger:data',      (_, row)   => callback(row)),
+  onMeggerRaw:       (callback) => ipcRenderer.on('megger:raw',       (_, chunk) => callback(chunk)),
   onMeggerConnected: (callback) => ipcRenderer.on('megger:connected', ()         => callback()),
   onMeggerStopped:   (callback) => ipcRenderer.on('megger:stopped',   ()         => callback()),
   onMultimeterLive:  (callback) => ipcRenderer.on('multimeter:live',  (_, value) => callback(value)),
+  onMultimeterRaw:   (callback) => ipcRenderer.on('multimeter:raw',   (_, chunk) => callback(chunk)),
   onMultimeterConnected: (callback) => ipcRenderer.on('multimeter:connected', ()         => callback()),
   onMultimeterStopped:   (callback) => ipcRenderer.on('multimeter:stopped',   ()         => callback()),
   onDeviceError:     (callback) => ipcRenderer.on('device:error',     (_, msg)   => callback(msg)),

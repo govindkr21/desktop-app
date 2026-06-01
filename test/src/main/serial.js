@@ -6,15 +6,110 @@
 // ─────────────────────────────────────────────
 
 const { SerialPort } = require('serialport');
-const { ReadlineParser } = require('@serialport/parser-readline');
 const net = require('net');
-const readline = require('readline');
 
 let meggerPort = null;
 let multimeterPort = null;
 let meggerSocket = null;
 let multimeterSocket = null;
 let mainWindow = null;
+let meggerRxBuffer = '';
+let multimeterRxBuffer = '';
+
+// MIT 525 stream: **,HH:MM:SS,nomV,actV,current,resistance,mode,pass,
+const MEGGER_RECORD_RE = /\*\*,\d{2}:\d{2}:\d{2},\d+,\d+,[^,\r\n]+,[^,\r\n]+,\d+,[YNyn],/i;
+
+function emitDeviceRaw(device, chunk) {
+  const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+  console.log(`[${device}] SERIAL:`, text);
+  if (mainWindow) {
+    mainWindow.webContents.send(`${device}:raw`, text);
+  }
+  return text;
+}
+
+function splitRxBuffer(buffer) {
+  const lines = [];
+  let rest = buffer;
+  let match;
+  const delimRe = /\r\n|\n|\r/g;
+  while ((match = delimRe.exec(rest)) !== null) {
+    const line = rest.slice(0, match.index);
+    if (line.length > 0) lines.push(line);
+    rest = rest.slice(match.index + match[0].length);
+    delimRe.lastIndex = 0;
+  }
+  return { lines, rest };
+}
+
+function extractMeggerRecordsFromBuffer() {
+  let match;
+  const records = [];
+  while ((match = meggerRxBuffer.match(MEGGER_RECORD_RE))) {
+    records.push(match[0]);
+    const start = meggerRxBuffer.indexOf(match[0]);
+    meggerRxBuffer = meggerRxBuffer.slice(0, start) + meggerRxBuffer.slice(start + match[0].length);
+  }
+  return records;
+}
+
+function handleMeggerPayload(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  console.log('[Megger] Complete record:', trimmed);
+  const row = parseMeggerLine(trimmed);
+  if (row && mainWindow) {
+    mainWindow.webContents.send('megger:data', row);
+  }
+}
+
+function processMeggerRx(chunk) {
+  const text = emitDeviceRaw('megger', chunk);
+  meggerRxBuffer += text;
+
+  const { lines, rest } = splitRxBuffer(meggerRxBuffer);
+  meggerRxBuffer = rest;
+  for (const line of lines) {
+    handleMeggerPayload(line);
+  }
+
+  for (const record of extractMeggerRecordsFromBuffer()) {
+    handleMeggerPayload(record.replace(/,\s*$/, ''));
+  }
+}
+
+function handleMultimeterPayload(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  console.log('[Multimeter] Line:', trimmed);
+  const value = parseMultimeterLine(trimmed);
+  if (value !== null && mainWindow) {
+    mainWindow.webContents.send('multimeter:live', value);
+  }
+}
+
+function processMultimeterRx(chunk) {
+  const text = emitDeviceRaw('multimeter', chunk);
+  multimeterRxBuffer += text;
+
+  const { lines, rest } = splitRxBuffer(multimeterRxBuffer);
+  multimeterRxBuffer = rest;
+  for (const line of lines) {
+    handleMultimeterPayload(line);
+  }
+}
+
+function wireMeggerInput(stream) {
+  meggerRxBuffer = '';
+  stream.removeAllListeners('data');
+  stream.on('data', processMeggerRx);
+}
+
+function wireMultimeterInput(stream) {
+  multimeterRxBuffer = '';
+  stream.removeAllListeners('data');
+  stream.on('data', processMultimeterRx);
+}
 
 // ── Set reference to main window for sending events ──
 function setWindow(win) {
@@ -122,25 +217,9 @@ function connectMegger(options) {
       if (mainWindow) mainWindow.webContents.send('device:error', 'Megger TCP Connect Error: ' + err.message);
     }
 
-    const rl = readline.createInterface({
-      input: meggerSocket,
-      crlfDelay: Infinity
-    });
-
-    rl.on('line', (line) => {
-      try {
-        console.log('[Megger TCP] Raw line:', line);
-        const row = parseMeggerLine(line);
-        if (row && mainWindow) {
-          mainWindow.webContents.send('megger:data', row);
-        }
-      } catch (err) {
-        console.error('[Megger TCP] Parse error:', err.message);
-      }
-    });
+    wireMeggerInput(meggerSocket);
 
   } else {
-    // Legacy Serial port connection
     meggerPort = new SerialPort({
       path: portPath,
       baudRate: baudRate,
@@ -150,25 +229,12 @@ function connectMegger(options) {
       autoOpen: true,
     });
 
-    const parser = meggerPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
-
     meggerPort.on('open', () => {
       console.log('[Megger] Connected on', portPath);
       if (mainWindow) mainWindow.webContents.send('megger:connected');
     });
 
-    // ── Parse incoming Megger data ─────────────
-    parser.on('data', (line) => {
-      try {
-        console.log('[Megger] Raw data:', line);
-        const row = parseMeggerLine(line);
-        if (row && mainWindow) {
-          mainWindow.webContents.send('megger:data', row);
-        }
-      } catch (err) {
-        console.error('[Megger] Parse error:', err.message);
-      }
-    });
+    wireMeggerInput(meggerPort);
 
     meggerPort.on('error', (err) => {
       console.error('[Megger] Error:', err.message);
@@ -185,13 +251,22 @@ function connectMegger(options) {
 // ── Replace this with actual Megger data format ──
 // ── Parse actual Megger MIT 525 8-column data streams ──
 function parseMeggerLine(line) {
-  const cleanLine = line.trim();
-  const parts = cleanLine.split(',');
-  
+  let cleanLine = line.trim();
+  if (cleanLine.toUpperCase().startsWith('SERIAL:')) {
+    cleanLine = cleanLine.slice(7).trim();
+  }
+
+  const parts = cleanLine.split(',').map(p => p.trim());
+
   if (parts.length < 6) return null;
 
+  // Leading "**" marker (MIT 525 CSV stream)
+  const offset = parts[0] === '**' ? 1 : 0;
+  if (parts.length < offset + 6) return null;
+
   // 1. Time parsing (hh:mm:ss -> total seconds)
-  const timeStr = parts[1] || '';
+  const timeStr = parts[offset] || '';
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(timeStr)) return null;
   let timeInSeconds = 0;
   if (timeStr.includes(':')) {
     const timeParts = timeStr.split(':');
@@ -203,17 +278,17 @@ function parseMeggerLine(line) {
     timeInSeconds = parseInt(timeStr) || 0;
   }
 
-  // 2. Voltages (Nominal in parts[2], Actual in parts[3])
-  const voltage = parseFloat(parts[2]) || 500;
-  const actualVoltage = parseFloat(parts[3]) || voltage;
+  // 2. Voltages (Nominal, Actual)
+  const voltage = parseFloat(parts[offset + 1]) || 500;
+  const actualVoltage = parseFloat(parts[offset + 2]) || voltage;
 
-  // 3. Leakage Current (convert Amps in scientific notation to micro-Amps uA)
-  const rawCurrent = parts[4] || '0';
+  // 3. Leakage Current (Amps -> micro-Amps uA)
+  const rawCurrent = parts[offset + 3] || '0';
   const currentInAmps = parseFloat(rawCurrent) || 0;
   const currentInMicroAmps = parseFloat((currentInAmps * 1e6).toFixed(6));
 
-  // 4. Insulation Resistance (convert Ohms in scientific notation to Mega-Ohms MΩ)
-  let rawResist = parts[5] || '0';
+  // 4. Insulation Resistance (Ohms -> Mega-Ohms MΩ); may be >1E12 or <1E6
+  let rawResist = parts[offset + 4] || '0';
   // Strip "greater than" (>) or "less than" (<) operators
   rawResist = rawResist.replace(/[><]/g, '').trim();
   const resistanceInOhms = parseFloat(rawResist) || 0;
@@ -229,6 +304,7 @@ function parseMeggerLine(line) {
 }
 
 function disconnectMegger() {
+  meggerRxBuffer = '';
   if (meggerPort && meggerPort.isOpen) {
     try { meggerPort.close(); } catch(e) { console.error('[Megger] Close error:', e.message); }
   }
@@ -298,24 +374,9 @@ function connectMultimeter(options) {
       if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter TCP Connect Error: ' + err.message);
     }
 
-    const rl = readline.createInterface({
-      input: multimeterSocket,
-      crlfDelay: Infinity
-    });
-
-    rl.on('line', (line) => {
-      try {
-        const value = parseMultimeterLine(line);
-        if (value !== null && mainWindow) {
-          mainWindow.webContents.send('multimeter:live', value);
-        }
-      } catch (err) {
-        console.error('[Multimeter TCP] Parse error:', err.message);
-      }
-    });
+    wireMultimeterInput(multimeterSocket);
 
   } else {
-    // Legacy Serial port connection
     multimeterPort = new SerialPort({
       path: portPath,
       baudRate: baudRate,
@@ -325,23 +386,12 @@ function connectMultimeter(options) {
       autoOpen: true,
     });
 
-    const parser = multimeterPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
-
     multimeterPort.on('open', () => {
       console.log('[Multimeter] Connected on', portPath);
       if (mainWindow) mainWindow.webContents.send('multimeter:connected');
     });
 
-    parser.on('data', (line) => {
-      try {
-        const value = parseMultimeterLine(line);
-        if (value !== null && mainWindow) {
-          mainWindow.webContents.send('multimeter:live', value);
-        }
-      } catch (err) {
-        console.error('[Multimeter] Parse error:', err.message);
-      }
-    });
+    wireMultimeterInput(multimeterPort);
 
     multimeterPort.on('error', (err) => {
       console.error('[Multimeter] Error:', err.message);
@@ -382,12 +432,16 @@ function buildCommand(mode, frequency, secondary) {
 }
 
 function parseMultimeterLine(line) {
-  console.log('[Multimeter] Raw line:', line);
-  const val = parseFloat(line.trim());
+  let clean = line.trim();
+  if (clean.toUpperCase().startsWith('SERIAL:')) {
+    clean = clean.slice(7).trim();
+  }
+  const val = parseFloat(clean);
   return isNaN(val) ? null : val;
 }
 
 function disconnectMultimeter() {
+  multimeterRxBuffer = '';
   if (multimeterPort && multimeterPort.isOpen) {
     try { multimeterPort.close(); } catch(e) { console.error('[Multimeter] Close error:', e.message); }
   }
@@ -455,7 +509,7 @@ module.exports = {
   connectMultimeter,
   sendMultimeterCommand,
   disconnectMultimeter,
-  // Simulators for testing without devices:
+  parseMeggerLine,
   startMeggerSimulator,
   stopMeggerSimulator,
   startMultimeterSimulator,
