@@ -163,7 +163,7 @@ export default function App() {
             ← Back
           </button>
           <span style={{ fontWeight: 700, fontSize: 15 }}>
-            ⚡ {record?.motorUtilityTag || record?.clientName || 'New Test Record'}
+            ⚡ {record?.clientName || 'New Test Record'}{record?.motorUtilityTag ? ` — ${record.motorUtilityTag}` : ''}
           </span>
         </div>
 

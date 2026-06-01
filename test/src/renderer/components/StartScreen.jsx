@@ -47,8 +47,13 @@ export default function StartScreen({ records, onNew, onOpen, onDuplicate }) {
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
             >
               <div>
-                <p style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', margin: 0 }}>{r.projectName || '(Untitled)'}</p>
-                <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>{r.customerName}</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', margin: 0 }}>
+                  {r.clientName || '(No Client)'}
+                  {r.motorUtilityTag ? <span style={{ color: '#1e40af' }}> — {r.motorUtilityTag}</span> : ''}
+                </p>
+                <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>
+                  {r.motorManufacturer ? `${r.motorManufacturer} · ` : ''}{r.equipmentType || 'Motor'}
+                </p>
               </div>
               <span style={{ fontSize: 11, color: '#94a3b8' }}>{r.date}</span>
             </div>

@@ -219,6 +219,11 @@ async function exportExcel(recordId, mainWindow) {
   infoSheet.addRow([]);
 
   addSectionHeader('Motor Nameplate Data');
+  addKeyValue('Motor Utility Tag', record.motorUtilityTag);
+  addKeyValue('Motor Serial Number', record.motorSerialNumber);
+  addKeyValue('Manufacturer', record.motorManufacturer);
+  addKeyValue('Model Number', record.motorModelNumber);
+  addKeyValue('Manufacturing Standard', record.manufacturingStandard);
   addKeyValue('Equipment Type', record.equipmentType);
   addKeyValue('Power (kW)', record.powerKw);
   addKeyValue('Speed (RPM)', record.speedRpm);
@@ -563,6 +568,11 @@ async function exportPDF(recordId, mainWindow) {
   ]);
 
   drawTableSectionTwoCol('Motor Nameplate Specifications', [
+    ['Motor Utility Tag', record.motorUtilityTag],
+    ['Motor Serial Number', record.motorSerialNumber],
+    ['Manufacturer', record.motorManufacturer],
+    ['Model Number', record.motorModelNumber],
+    ['Manufacturing Standard', record.manufacturingStandard],
     ['Equipment Type', record.equipmentType],
     ['cos Fi (PF)', record.cosFi],
     ['Power (kW)', record.powerKw],

@@ -680,7 +680,8 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
                         <div>
                           <p style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#1e40af' : '#1e293b', margin: 0 }}>
-                            {m.motorUtilityTag || '(No Utility Tag)'}
+                            {m.clientName || '(No Client)'}
+                            {m.motorUtilityTag ? <span style={{ color: isActive ? '#3b82f6' : '#475569' }}> — {m.motorUtilityTag}</span> : ''}
                           </p>
                           <p style={{ fontSize: 10, color: '#64748b', margin: '2px 0 0 0' }}>
                             S/N: {m.motorSerialNumber || 'N/A'}
@@ -693,21 +694,41 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
 
                       {/* Action buttons inside the item */}
                       <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
-                        <button
-                          onClick={() => onOpen(m)}
-                          style={{
-                            flex: 1, border: 'none', borderRadius: 4, background: isActive ? '#1e40af' : '#f1f5f9',
-                            color: isActive ? '#fff' : '#475569', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
-                          }}
-                        >
-                          👁️ Open
-                        </button>
+                        {isActive ? (
+                          // Currently active record — show badge, no point opening it again
+                          <div style={{
+                            flex: 1, borderRadius: 4, background: '#1e40af',
+                            color: '#fff', fontSize: 10, padding: '4px 6px', fontWeight: 700,
+                            textAlign: 'center', letterSpacing: 0.3,
+                          }}>
+                            ✓ Currently Active
+                          </div>
+                        ) : (
+                          // Different motor — Open switches to it
+                          <button
+                            onClick={() => onOpen(m)}
+                            style={{
+                              flex: 1, border: 'none', borderRadius: 4, background: '#f1f5f9',
+                              color: '#475569', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600,
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#dbeafe'}
+                            onMouseLeave={e => e.currentTarget.style.background = '#f1f5f9'}
+                            title="Switch to this motor record"
+                          >
+                            👁️ Open
+                          </button>
+                        )}
                         <button
                           onClick={() => onDuplicate(m)}
                           style={{
                             flex: 1, border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff',
-                            color: '#475569', fontSize: 10, padding: '3px 6px', cursor: 'pointer', fontWeight: 600
+                            color: '#475569', fontSize: 10, padding: '3px 6px', cursor: 'pointer', fontWeight: 600,
+                            transition: 'background 0.15s',
                           }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                          onMouseLeave={e => e.currentTarget.style.background = '#fff'}
+                          title="Duplicate this motor record"
                         >
                           📋 Copy
                         </button>
@@ -715,8 +736,12 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                           onClick={() => openRedoModal(m)}
                           style={{
                             flex: 1, border: 'none', borderRadius: 4, background: '#fee2e2',
-                            color: '#b91c1c', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600
+                            color: '#b91c1c', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600,
+                            transition: 'background 0.15s',
                           }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#fecaca'}
+                          onMouseLeave={e => e.currentTarget.style.background = '#fee2e2'}
+                          title="Re-do test on this motor"
                         >
                           🔄 Re-do
                         </button>

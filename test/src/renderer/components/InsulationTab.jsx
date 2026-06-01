@@ -92,13 +92,19 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
 
     if (demoMode) {
       // ── DEMO MODE: interval simulator ──
+      // Use real elapsed time so the graph time axis matches actual clock seconds
       const activeRows = (tableData[activeTab] && tableData[activeTab][selectedTable]) || [];
-      let t = activeRows.length ? activeRows[activeRows.length - 1].time + 15 : 15;
+      const timeOffset = activeRows.length ? activeRows[activeRows.length - 1].time : 0;
+      const captureStartTime = Date.now();
 
       simRef.current = setInterval(async () => {
+        // t = real seconds elapsed since capture started + any previously recorded offset
+        const elapsedSeconds = Math.round((Date.now() - captureStartTime) / 1000);
+        const t = timeOffset + elapsedSeconds;
+
         const isRamp = activeTab === 'RAMP';
         const vBase = isRamp ? Math.min(5000, 100 + t * 5) : 500;
-        
+
         const row = {
           time: t,
           voltage: vBase,
@@ -107,7 +113,6 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
           resistance: Math.round(3500 + Math.random() * 4500),
         };
         await saveRow(activeTab, selectedTable, row, record);
-        t += 15;
       }, 1200);
     } else {
       // ── REAL DEVICE MODE ──
