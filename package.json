@@ -1,7 +1,7 @@
 {
   "name": "electrical-testing-suite-root",
   "version": "1.0.0",
-  "description": "Root wrapper for the Electrical Testing Suite",
+  "description": "Root wrapper for the Sarox Technology Inc.",
   "scripts": {
     "start": "npm start --prefix test",
     "package": "npm run package --prefix test",

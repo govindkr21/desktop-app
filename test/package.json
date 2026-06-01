@@ -1,6 +1,6 @@
 {
   "name": "electrical-testing-suite",
-  "productName": "Electrical Testing Suite",
+  "productName": "Sarox Technology Inc.",
   "version": "1.0.0",
   "description": "Insulation & LCR Multimeter Desktop Testing Application",
   "main": ".webpack/main",

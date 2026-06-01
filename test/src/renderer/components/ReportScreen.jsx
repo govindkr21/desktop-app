@@ -1,5 +1,6 @@
 // src/renderer/components/ReportScreen.jsx
 import { useState, useEffect } from 'react';
+import logo from '../../assets/logo.png';
 
 const api = window.electronAPI;
 
@@ -167,7 +168,7 @@ export default function ReportScreen({ record, onChange }) {
         {/* Document Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #f1f5f9', paddingBottom: 14, marginBottom: 18 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 32 }}>⚡</span>
+            <img src={logo} alt="Logo" style={{ height: 32, objectFit: 'contain' }} />
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>ELECTRICAL MOTOR TEST REPORT</h3>
               <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>Offline Calibration & Diagnostic Suite</p>

@@ -1,4 +1,5 @@
-// src/renderer/components/StartScreen.jsx
+import logo from '../../assets/logo.png';
+
 export default function StartScreen({ records, onNew, onOpen, onDuplicate }) {
   const cardStyle = (primary) => ({
     background: primary ? '#1e40af' : '#fff',
@@ -14,10 +15,11 @@ export default function StartScreen({ records, onNew, onOpen, onDuplicate }) {
   return (
     <div style={{ minHeight: '100vh', background: '#f1f5f9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
 
-      <div style={{ textAlign: 'center', marginBottom: 36 }}>
-        <div style={{ fontSize: 52 }}>⚡</div>
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: '#0f172a', marginTop: 8 }}>Electrical Testing Suite</h1>
-        <p style={{ color: '#64748b', marginTop: 6, fontSize: 14 }}>Insulation & LCR Measurement System</p>
+      <div style={{ textAlign: 'center', marginBottom: 36, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <img src={logo} alt="Sarox Technology Inc." style={{ height: 80, objectFit: 'contain', marginBottom: 8 }} />
+        <p style={{ color: '#64748b', marginTop: 6, fontSize: 14 }}>Motor condition
+          Monitoring system
+          PDM-S411</p>
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 36 }}>

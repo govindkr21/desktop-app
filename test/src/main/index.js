@@ -5,7 +5,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 
 // ── Top-level requires so webpack asset-relocator traces native deps correctly ──
-const _serial  = require('./serial');  const serial  = _serial.default  || _serial;
+const _serial = require('./serial'); const serial = _serial.default || _serial;
 const _reports = require('./reports'); const reports = _reports.default || _reports;
 
 // Keep a global reference so window is not garbage collected
@@ -35,7 +35,7 @@ const createWindow = () => {
     height: 800,
     minWidth: 1024,
     minHeight: 650,
-    title: 'Electrical Testing Suite',
+    title: 'Sarox Technology Inc.',
     backgroundColor: '#f1f5f9',
     webPreferences: {
       preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
@@ -79,22 +79,22 @@ app.on('activate', () => {
 const db = () => require('./database');
 
 // ── Records ───────────────────────────────────
-ipcMain.handle('db:getAllRecords',    ()           => db().getAllRecords());
-ipcMain.handle('db:createRecord',    (_, data)    => db().createRecord(data));
-ipcMain.handle('db:getRecord',       (_, id)      => db().getRecord(id));
-ipcMain.handle('db:updateRecord',    (_, id, data)=> db().updateRecord(id, data));
-ipcMain.handle('db:duplicateRecord', (_, id)      => db().duplicateRecord(id));
-ipcMain.handle('db:deleteRecord',    (_, id)      => db().deleteRecord(id));
+ipcMain.handle('db:getAllRecords', () => db().getAllRecords());
+ipcMain.handle('db:createRecord', (_, data) => db().createRecord(data));
+ipcMain.handle('db:getRecord', (_, id) => db().getRecord(id));
+ipcMain.handle('db:updateRecord', (_, id, data) => db().updateRecord(id, data));
+ipcMain.handle('db:duplicateRecord', (_, id) => db().duplicateRecord(id));
+ipcMain.handle('db:deleteRecord', (_, id) => db().deleteRecord(id));
 
 // ── Insulation data ───────────────────────────
-ipcMain.handle('db:saveInsulationRow',  (_, recordId, tab, tableId, row) => db().saveInsulationRow(recordId, tab, tableId, row));
-ipcMain.handle('db:getInsulationData',  (_, recordId)                    => db().getInsulationData(recordId));
-ipcMain.handle('db:clearInsulationTab', (_, recordId, tab, tableId)      => db().clearInsulationTab(recordId, tab, tableId));
+ipcMain.handle('db:saveInsulationRow', (_, recordId, tab, tableId, row) => db().saveInsulationRow(recordId, tab, tableId, row));
+ipcMain.handle('db:getInsulationData', (_, recordId) => db().getInsulationData(recordId));
+ipcMain.handle('db:clearInsulationTab', (_, recordId, tab, tableId) => db().clearInsulationTab(recordId, tab, tableId));
 
 // ── Multimeter data ───────────────────────────
 ipcMain.handle('db:saveMultimeterField', (_, recordId, field, value, temp) => db().saveMultimeterField(recordId, field, value, temp));
-ipcMain.handle('db:getMultimeterData',   (_, recordId)                      => db().getMultimeterData(recordId));
-ipcMain.handle('db:clearRecordTestData', (_, recordId)                      => db().clearRecordTestData(recordId));
+ipcMain.handle('db:getMultimeterData', (_, recordId) => db().getMultimeterData(recordId));
+ipcMain.handle('db:clearRecordTestData', (_, recordId) => db().clearRecordTestData(recordId));
 
 // ── Reports ───────────────────────────────────
 ipcMain.handle('report:exportExcel', async (_, recordId) => {

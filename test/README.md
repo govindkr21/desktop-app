@@ -1,4 +1,4 @@
-# ⚡ Electrical Testing Suite
+# ⚡ Sarox Technology Inc.
 ### Desktop App — Electron + React + SQLite
 
 ---
