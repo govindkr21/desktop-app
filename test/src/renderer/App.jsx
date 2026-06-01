@@ -21,6 +21,10 @@ export default function App() {
   const [demoMode,      setDemoMode]      = useState(true);
   const [showConnSetup, setShowConnSetup] = useState(false);
 
+  // Background capture state — survives tab switches
+  const [insulationCapturing,  setInsulationCapturing]  = useState(false);
+  const [multimeterCapturing,  setMultimeterCapturing]  = useState(false);
+
   // Global Device Connection Status State
   const [meggerStatus, setMeggerStatus] = useState('disconnected');
   const [multimeterStatus, setMultimeterStatus] = useState('disconnected');
@@ -136,8 +140,8 @@ export default function App() {
 
   const TABS = [
     { key: 'info',       label: '📋 Information'    },
-    { key: 'insulation', label: '⚡ Insulation Test' },
-    { key: 'multimeter', label: '🔌 Winding Test'    },
+    { key: 'insulation', label: '⚡ Insulation Test', capturing: insulationCapturing },
+    { key: 'multimeter', label: '🔌 Winding Test',    capturing: multimeterCapturing },
     { key: 'report',     label: '📄 Report'          },
   ];
 
@@ -282,20 +286,30 @@ export default function App() {
               borderBottom: activeTab === t.key ? '2px solid #1e40af' : '2px solid transparent',
               color: activeTab === t.key ? '#1e40af' : '#64748b',
               transition: 'all 0.15s',
+              display: 'flex', alignItems: 'center', gap: 6,
             }}
           >
             {t.label}
-            {/* Show dot on device tabs when in real mode */}
-            {!demoMode && (t.key === 'insulation' || t.key === 'multimeter') && (
-              <span style={{ marginLeft: 4, width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', verticalAlign: 'middle' }}></span>
+            {/* Pulsing dot when this tab's capture is running in background */}
+            {t.capturing && activeTab !== t.key && (
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%', background: '#ef4444',
+                display: 'inline-block', flexShrink: 0,
+                boxShadow: '0 0 0 0 rgba(239,68,68,0.7)',
+                animation: 'pulse-dot 1.4s infinite',
+              }} title="Capture running in background" />
+            )}
+            {/* Green dot in real mode */}
+            {!demoMode && (t.key === 'insulation' || t.key === 'multimeter') && !t.capturing && (
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', verticalAlign: 'middle' }} />
             )}
           </button>
         ))}
       </div>
 
-      {/* ── Content ── */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        {activeTab === 'info'       && (
+      {/* ── Content — always mounted, CSS hidden to preserve background capture state ── */}
+      <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+        <div style={{ display: activeTab === 'info' ? 'block' : 'none', height: '100%' }}>
           <InfoTab
             record={record}
             records={records}
@@ -304,26 +318,30 @@ export default function App() {
             onChange={handleInfoChange}
             loadRecords={loadRecords}
           />
-        )}
-        {activeTab === 'insulation' && (
+        </div>
+        <div style={{ display: activeTab === 'insulation' ? 'block' : 'none', height: '100%' }}>
           <InsulationTab
             record={record}
             demoMode={demoMode}
             meggerStatus={meggerStatus}
             setMeggerStatus={setMeggerStatus}
             onChange={handleInfoChange}
+            onCaptureChange={setInsulationCapturing}
           />
-        )}
-        {activeTab === 'multimeter' && (
+        </div>
+        <div style={{ display: activeTab === 'multimeter' ? 'block' : 'none', height: '100%' }}>
           <MultimeterTab
             record={record}
             demoMode={demoMode}
             multimeterStatus={multimeterStatus}
             setMultimeterStatus={setMultimeterStatus}
             onChange={handleInfoChange}
+            onCaptureChange={setMultimeterCapturing}
           />
-        )}
-        {activeTab === 'report'     && <ReportScreen  record={record} onChange={handleInfoChange} />}
+        </div>
+        <div style={{ display: activeTab === 'report' ? 'block' : 'none', height: '100%' }}>
+          <ReportScreen record={record} onChange={handleInfoChange} />
+        </div>
       </div>
 
     </div>

@@ -16,7 +16,7 @@ const TABLE_SUFFIXES = [
   'RST-GND-Rotor'
 ];
 
-export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange }) {
+export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange, onCaptureChange }) {
   const correctInsulationTo40 = record?.correctInsulationTo40 || false;
   const [activeTab, setActiveTab] = useState('PI'); // 'PI' | 'DAR' | 'SV' | 'RAMP'
   const [tableData, setTableData] = useState({}); // { PI: { 'PI-R-GND-Stator': [...] } }
@@ -40,13 +40,19 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
   const alertIntervalRef = useRef(null);
   const lastPacketTime = useRef(Date.now());
   const captureRef = useRef({ activeTab: 'PI', selectedTable: '', record: null });
+  const isCapturingRef = useRef(false); // mirrors isCapturing state for use in callbacks
 
   const meggerOnline = meggerStatus === 'connected';
 
-  // Set default selected table when switching tabs
+  // Notify parent when capture state changes (for background indicator)
+  useEffect(() => {
+    if (onCaptureChange) onCaptureChange(isCapturing);
+  }, [isCapturing, onCaptureChange]);
+
+  // Set default selected table when switching insulation sub-tabs
+  // NOTE: does NOT stop a running capture — capture continues on previous table
   useEffect(() => {
     setSelectedTable(`${activeTab}-${TABLE_SUFFIXES[0]}`);
-    stopCapture();
   }, [activeTab]);
 
   // Load saved data on mount
@@ -65,6 +71,11 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
   const stopCapture = useCallback(() => {
     clearInterval(simRef.current);
     clearInterval(alertIntervalRef.current);
+    simRef.current = null;
+    // Remove real-device listeners so no stale data arrives after stopping
+    api.removeAllListeners('megger:data');
+    api.removeAllListeners('megger:stopped');
+    isCapturingRef.current = false;
     setIsCapturing(false);
     setStatus('');
     setTelemetryAlert(false);
@@ -89,6 +100,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
     setStatus('● Recording live data...');
     setTelemetryAlert(false);
     lastPacketTime.current = Date.now();
+    isCapturingRef.current = true;
 
     if (demoMode) {
       // ── DEMO MODE: interval simulator ──
@@ -128,6 +140,9 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
       }, 2000);
 
       api.onMeggerData(async (row) => {
+        // Guard: ignore if capture was stopped
+        if (!isCapturingRef.current) return;
+
         // Reset telemetry timer
         lastPacketTime.current = Date.now();
         setTelemetryAlert(false);
