@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearInsulationTab: (recordId, tab, tableId)      => ipcRenderer.invoke('db:clearInsulationTab', recordId, tab, tableId),
 
   // ── Multimeter data ──────────────────────────
-  saveMultimeterField: (recordId, field, value, temp) => ipcRenderer.invoke('db:saveMultimeterField', recordId, field, value, temp),
+  saveMultimeterField: (recordId, field, value, temp, frequency) => ipcRenderer.invoke('db:saveMultimeterField', recordId, field, value, temp, frequency),
   getMultimeterData:   (recordId)                      => ipcRenderer.invoke('db:getMultimeterData', recordId),
   clearRecordTestData: (recordId)                      => ipcRenderer.invoke('db:clearRecordTestData', recordId),
 

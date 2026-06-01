@@ -2,6 +2,14 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import favicon from '../assets/favicon.png';
+
+// Dynamically set favicon to match the Webpack compiled asset
+const link = document.querySelector("link[rel~='icon']") || document.createElement('link');
+link.type = 'image/png';
+link.rel = 'icon';
+link.href = favicon;
+document.getElementsByTagName('head')[0].appendChild(link);
 
 console.log('Renderer process started, DOM state:', document.readyState);
 

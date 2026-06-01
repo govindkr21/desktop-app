@@ -37,6 +37,7 @@ const createWindow = () => {
     minHeight: 650,
     title: 'Sarox Technology Inc.',
     backgroundColor: '#f1f5f9',
+    icon: path.join(app.getAppPath(), 'src/assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     webPreferences: {
       preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
       contextIsolation: true,
@@ -51,8 +52,8 @@ const createWindow = () => {
 
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
-  // Open DevTools in development — comment this out for production
-  mainWindow.webContents.openDevTools();
+  // Open DevTools in development — uncomment for debugging
+  // mainWindow.webContents.openDevTools();
 };
 
 // ── App lifecycle ─────────────────────────────
@@ -92,7 +93,7 @@ ipcMain.handle('db:getInsulationData', (_, recordId) => db().getInsulationData(r
 ipcMain.handle('db:clearInsulationTab', (_, recordId, tab, tableId) => db().clearInsulationTab(recordId, tab, tableId));
 
 // ── Multimeter data ───────────────────────────
-ipcMain.handle('db:saveMultimeterField', (_, recordId, field, value, temp) => db().saveMultimeterField(recordId, field, value, temp));
+ipcMain.handle('db:saveMultimeterField', (_, recordId, field, value, temp, frequency) => db().saveMultimeterField(recordId, field, value, temp, frequency));
 ipcMain.handle('db:getMultimeterData', (_, recordId) => db().getMultimeterData(recordId));
 ipcMain.handle('db:clearRecordTestData', (_, recordId) => db().clearRecordTestData(recordId));
 

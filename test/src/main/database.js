@@ -159,9 +159,24 @@ function clearInsulationTab(recordId, tab, tableId) {
   return { success: true };
 }
 
-function saveMultimeterField(recordId, field, value, temperature) {
+function saveMultimeterField(recordId, field, value, temperature, frequency) {
   if (!data.multimeter[recordId]) data.multimeter[recordId] = {};
-  data.multimeter[recordId][field] = { value, temperature: temperature || 0 };
+  const existing = data.multimeter[recordId][field] || {};
+  
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const updates = value;
+    data.multimeter[recordId][field] = {
+      value: updates.hasOwnProperty('value') ? updates.value : existing.value,
+      temperature: updates.hasOwnProperty('temperature') ? updates.temperature : (existing.temperature || 0),
+      frequency: updates.hasOwnProperty('frequency') ? updates.frequency : existing.frequency
+    };
+  } else {
+    data.multimeter[recordId][field] = {
+      value: value !== undefined && value !== null ? value : existing.value,
+      temperature: temperature !== undefined && temperature !== null ? temperature : (existing.temperature || 0),
+      frequency: frequency !== undefined && frequency !== null ? frequency : existing.frequency
+    };
+  }
   save();
   return { success: true };
 }

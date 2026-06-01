@@ -258,6 +258,7 @@ async function exportExcel(recordId, mainWindow) {
     { header: 'Phase Line', key: 'phase', width: 16 },
     { header: 'Value', key: 'value', width: 14 },
     { header: 'Unit', key: 'unit', width: 10 },
+    { header: 'Frequency', key: 'freq', width: 14 },
     { header: 'Temperature (°C)', key: 'temp', width: 18 }
   ];
 
@@ -294,6 +295,7 @@ async function exportExcel(recordId, mainWindow) {
           phase: `Phase ${key}`,
           value: displayVal,
           unit: 'Ω',
+          freq: data.frequency || '—',
           temp: data.temperature
         });
         row.eachCell(cell => { cell.font = bodyFont; cell.border = borders; cell.alignment = { horizontal: 'center' }; });
@@ -314,6 +316,7 @@ async function exportExcel(recordId, mainWindow) {
           phase: `Phase ${key}`,
           value: data.value,
           unit: 'mH',
+          freq: data.frequency || '—',
           temp: data.temperature
         });
         row.eachCell(cell => { cell.font = bodyFont; cell.border = borders; cell.alignment = { horizontal: 'center' }; });
@@ -334,6 +337,7 @@ async function exportExcel(recordId, mainWindow) {
           phase: `Phase ${key}`,
           value: data.value,
           unit: 'nF',
+          freq: data.frequency || '—',
           temp: data.temperature
         });
         row.eachCell(cell => { cell.font = bodyFont; cell.border = borders; cell.alignment = { horizontal: 'center' }; });
@@ -348,7 +352,7 @@ async function exportExcel(recordId, mainWindow) {
     ? `* Note: The winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula (Baseline 20°C correction is ACTIVE).`
     : `* Note: The winding resistance measurements shown above are raw/uncorrected values (Baseline 20°C correction is INACTIVE).`;
   const windingFootnoteRow = windingSheet.addRow([windingFootnoteText]);
-  windingSheet.mergeCells(`A${windingFootnoteRow.number}:F${windingFootnoteRow.number}`);
+  windingSheet.mergeCells(`A${windingFootnoteRow.number}:G${windingFootnoteRow.number}`);
   windingFootnoteRow.getCell(1).font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF64748B' } };
 
   // ── Sheets 3-6: Insulation Tests (Megger) ──
@@ -602,18 +606,30 @@ async function exportPDF(recordId, mainWindow) {
   drawHeader('WINDING TEST READINGS (LCR MULTIMETER)');
 
   const drawWindingWGroup = (groupLabel, groupPrefix) => {
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(BLUE).text(groupLabel, 40);
+    const globalFreq = mulData[`${groupPrefix}_global_freq`]?.frequency;
+    const titleText = globalFreq ? `${groupLabel} (Winding Freq: ${globalFreq})` : groupLabel;
+
+    doc.fontSize(11).font('Helvetica-Bold').fillColor(BLUE).text(titleText, 40);
     doc.moveDown(0.2);
 
+    const resFreq = mulData[`${groupPrefix}_res_freq`]?.frequency;
+    const indFreq = mulData[`${groupPrefix}_ind_freq`]?.frequency;
+    const capFreq = mulData[`${groupPrefix}_cap_freq`]?.frequency;
+
     const cols = [W * 0.25, W * 0.25, W * 0.25, W * 0.25];
-    const headers = ['Phase Line', `Resistance (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}`, 'Inductance (mH)', 'Capacitance (nF)'];
+    const headers = [
+      'Phase Line',
+      `Resistance (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}${resFreq ? ` [${resFreq}]` : ''}`,
+      `Inductance (mH)${indFreq ? ` [${indFreq}]` : ''}`,
+      `Capacitance (nF)${capFreq ? ` [${capFreq}]` : ''}`
+    ];
     let y = doc.y;
     let x = 40;
 
     // Table Header
     doc.rect(40, y, W, 18).fill(BLUE);
     headers.forEach((h, idx) => {
-      doc.fillColor('#FFFFFF').fontSize(8).font('Helvetica-Bold').text(h, x, y + 5, { width: cols[idx], align: 'center' });
+      doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(h, x, y + 5, { width: cols[idx], align: 'center' });
       x += cols[idx];
     });
     y += 18;
@@ -644,12 +660,28 @@ async function exportPDF(recordId, mainWindow) {
       doc.fillColor(DARK_GRAY).fontSize(8).font('Helvetica-Bold').text(`Phase ${phase}`, x + 6, y + 3, { width: cols[0] - 12, align: 'left' });
       x += cols[0];
 
-      doc.font('Helvetica');
-      doc.text(rVal !== undefined ? String(rVal) : '—', x, y + 3, { width: cols[1], align: 'center' });
+      doc.font('Helvetica').fontSize(7.5);
+
+      let rDisplay = rVal !== undefined ? String(rVal) : '—';
+      if (rVal !== undefined && mulData[rKey]?.frequency && mulData[rKey].frequency !== resFreq) {
+        rDisplay += ` [${mulData[rKey].frequency}]`;
+      }
+
+      let iDisplay = iVal !== undefined ? String(iVal) : '—';
+      if (iVal !== undefined && mulData[iKey]?.frequency && mulData[iKey].frequency !== indFreq) {
+        iDisplay += ` [${mulData[iKey].frequency}]`;
+      }
+
+      let cDisplay = cVal !== undefined ? String(cVal) : '—';
+      if (cVal !== undefined && mulData[cKey]?.frequency && mulData[cKey].frequency !== capFreq) {
+        cDisplay += ` [${mulData[cKey].frequency}]`;
+      }
+
+      doc.text(rDisplay, x, y + 3, { width: cols[1], align: 'center' });
       x += cols[1];
-      doc.text(iVal !== undefined ? String(iVal) : '—', x, y + 3, { width: cols[2], align: 'center' });
+      doc.text(iDisplay, x, y + 3, { width: cols[2], align: 'center' });
       x += cols[2];
-      doc.text(cVal !== undefined ? String(cVal) : '—', x, y + 3, { width: cols[3], align: 'center' });
+      doc.text(cDisplay, x, y + 3, { width: cols[3], align: 'center' });
 
       y += 14;
       alternate = !alternate;

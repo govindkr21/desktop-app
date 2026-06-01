@@ -51,37 +51,131 @@ const S = {
 };
 
 // ── Reusable measurement group ───────────────────────────
-function MeasGroup({ title, keys, prefix, unit, captured, onCapture, correctWindingTo20, temp }) {
+function MeasGroup({
+  title,
+  keys,
+  prefix,
+  unit,
+  captured,
+  frequencies,
+  onCapture,
+  correctWindingTo20,
+  temp,
+  focusedField,
+  editValues,
+  handleFocus,
+  handleTextChange,
+  handleBlur,
+  handleFreqChange,
+  handleCopyFreq
+}) {
+  const groupFreqKey = `${prefix}_freq`;
+  const groupFreq = frequencies[groupFreqKey] || '';
+
   return (
     <div style={S.sectionBox}>
-      <span style={S.sectionTitle}>{title}</span>
+      {/* Group Header with Title, Frequency Input, and Copy Button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: 4, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a' }}>{title}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Freq:</span>
+          <input
+            type="text"
+            value={groupFreq}
+            onChange={(e) => handleFreqChange(groupFreqKey, e.target.value)}
+            style={{ width: 44, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 10, textAlign: 'center' }}
+            placeholder="Freq"
+          />
+          <button
+            onClick={() => handleCopyFreq(prefix, keys)}
+            title="Copy frequency to all phases below"
+            style={{
+              background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 4,
+              padding: '2px 5px', fontSize: 9, fontWeight: 700, color: '#1e40af', cursor: 'pointer'
+            }}
+          >
+            Copy
+          </button>
+        </div>
+      </div>
+
+      {/* Phase Rows */}
       {keys.map(k => {
         const fKey = `${prefix}_${k}`;
         const val = captured[fKey];
+        const phaseFreqKey = `${fKey}_freq`;
+        const phaseFreq = frequencies[phaseFreqKey] || '';
         
-        let displayVal = '';
-        if (val !== undefined) {
+        let correctedVal = '';
+        if (val !== undefined && val !== null) {
           if (correctWindingTo20 && prefix.includes('_res')) {
             const tempVal = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
-            displayVal = parseFloat((val * (254.5 / (234.5 + tempVal))).toFixed(3));
+            correctedVal = parseFloat((val * (254.5 / (234.5 + tempVal))).toFixed(3));
           } else {
-            displayVal = val;
+            correctedVal = val;
           }
         }
 
+        const isFocused = focusedField === fKey;
+        const displayVal = isFocused 
+          ? (editValues[fKey] ?? '') 
+          : (correctedVal !== undefined && correctedVal !== null ? String(correctedVal) : '');
+
         return (
-          <div key={k} style={S.row}>
-            <span style={S.phaseLabel}>Phase {k}</span>
+          <div key={k} style={{ ...S.row, gap: 4 }}>
+            <span style={{ ...S.phaseLabel, width: 78 }}>Phase {k}</span>
+            
             <input
-              readOnly
               type="text"
               value={displayVal}
-              onClick={() => onCapture(fKey)}
+              onFocus={() => handleFocus(fKey, val)}
+              onChange={(e) => handleTextChange(fKey, e.target.value)}
+              onBlur={() => handleBlur(fKey)}
               style={S.captureInput(val !== undefined)}
               placeholder="—"
-              title="Click to capture current live reading"
+              title="Type reading manually, or click live streaming indicator / setup to capture"
             />
-            <span style={S.unit}>{unit}</span>
+            
+            <button
+              onClick={() => onCapture(fKey)}
+              title="Capture live reading"
+              style={{
+                background: '#eff6ff',
+                border: '1px solid #bfdbfe',
+                borderRadius: 4,
+                width: 22,
+                height: 20,
+                fontSize: 10,
+                cursor: 'pointer',
+                color: '#1e40af',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+              }}
+            >
+              ⚡
+            </button>
+            
+            <span style={{ ...S.unit, width: 22 }}>{unit}</span>
+
+            <input
+              type="text"
+              value={phaseFreq}
+              onChange={(e) => handleFreqChange(phaseFreqKey, e.target.value)}
+              placeholder="Freq"
+              style={{
+                width: 44,
+                border: '1px solid #cbd5e1',
+                borderRadius: 4,
+                padding: '2px 4px',
+                fontSize: 10,
+                textAlign: 'center',
+                outline: 'none',
+                background: '#fff',
+                flexShrink: 0
+              }}
+            />
           </div>
         );
       })}
@@ -229,8 +323,13 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const [secondary, setSecondary] = useState('D');
   const [liveValue, setLiveValue] = useState(0);
   const [captured,  setCaptured]  = useState({});
+  const [frequencies, setFrequencies] = useState({});
   const [temperature, setTemperature] = useState('25');
   const [showSetup, setShowSetup] = useState(false);
+
+  // Focus & manual edit values
+  const [focusedField, setFocusedField] = useState(null);
+  const [editValues, setEditValues] = useState({});
 
   // Watchdog Telemetry states
   const [telemetryAlert, setTelemetryAlert] = useState(false);
@@ -246,12 +345,19 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     if (!record) return;
     api.getMultimeterData(record.id).then(data => {
       const vals = {};
+      const freqs = {};
       let tempVal = '25';
       Object.entries(data || {}).forEach(([field, d]) => {
-        vals[field] = d.value;
+        if (d.value !== undefined && d.value !== null) {
+          vals[field] = d.value;
+        }
+        if (d.frequency !== undefined && d.frequency !== null) {
+          freqs[field] = d.frequency;
+        }
         if (d.temperature !== undefined && d.temperature !== 0) tempVal = String(d.temperature);
       });
       setCaptured(vals);
+      setFrequencies(freqs);
       setTemperature(tempVal);
     });
   }, [record?.id]);
@@ -297,7 +403,12 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const handleCapture = async (fieldKey) => {
     const val = liveValue;
     setCaptured(prev => ({ ...prev, [fieldKey]: val }));
-    if (record) await api.saveMultimeterField(record.id, fieldKey, val, parseFloat(temperature) || 0);
+    if (record) {
+      await api.saveMultimeterField(record.id, fieldKey, {
+        value: val,
+        temperature: parseFloat(temperature) || 0
+      });
+    }
   };
 
   const handleSetupSave = async ({ mode: m, freq: f, secondary: s }) => {
@@ -312,6 +423,76 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         console.error('Failed to send multimeter setup command:', err);
       }
     }
+  };
+
+  // Focus & manual edit handlers
+  const handleFocus = (fieldKey, currentVal) => {
+    setFocusedField(fieldKey);
+    setEditValues(prev => ({ ...prev, [fieldKey]: currentVal !== undefined && currentVal !== null ? String(currentVal) : '' }));
+  };
+
+  const handleTextChange = (fieldKey, text) => {
+    setEditValues(prev => ({ ...prev, [fieldKey]: text }));
+  };
+
+  const handleBlur = async (fieldKey) => {
+    setFocusedField(null);
+    const rawStr = editValues[fieldKey];
+    if (rawStr === undefined) return;
+
+    let finalVal = undefined;
+    if (rawStr.trim() !== '') {
+      const parsed = parseFloat(rawStr);
+      if (!isNaN(parsed)) {
+        finalVal = parsed;
+      }
+    }
+
+    setCaptured(prev => {
+      const copy = { ...prev };
+      if (finalVal === undefined) {
+        delete copy[fieldKey];
+      } else {
+        copy[fieldKey] = finalVal;
+      }
+      return copy;
+    });
+
+    if (record) {
+      await api.saveMultimeterField(record.id, fieldKey, {
+        value: finalVal,
+        temperature: parseFloat(temperature) || 0
+      });
+    }
+    
+    setEditValues(prev => {
+      const copy = { ...prev };
+      delete copy[fieldKey];
+      return copy;
+    });
+  };
+
+  const handleFreqChange = async (fieldKey, freqVal) => {
+    setFrequencies(prev => ({ ...prev, [fieldKey]: freqVal }));
+    if (record) {
+      await api.saveMultimeterField(record.id, fieldKey, { frequency: freqVal });
+    }
+  };
+
+  const handleCopyFreq = async (prefix, keys) => {
+    const groupFreqKey = `${prefix}_freq`;
+    const groupFreq = frequencies[groupFreqKey] || '';
+    if (!groupFreq) return;
+
+    const updatedFreqs = { ...frequencies };
+    for (const k of keys) {
+      const phaseFreqKey = `${prefix}_${k}_freq`;
+      updatedFreqs[phaseFreqKey] = groupFreq;
+      if (record) {
+        await api.saveMultimeterField(record.id, phaseFreqKey, { frequency: groupFreq });
+      }
+    }
+    setFrequencies(updatedFreqs);
   };
 
   // --- Imbalance & Diagnostic Analytics (IEEE and Standard Industrial limits) ---
@@ -385,7 +566,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>🌀 Winding Test (RLC)</span>
-          <span style={{ fontSize: 11, color: '#94a3b8' }}>Click any field to capture the current live readout</span>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>Type directly to enter readings manually, or click ⚡ to capture current live readout</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* Active settings pills */}
@@ -446,17 +627,74 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
         {/* STATOR WINDING */}
         <div style={S.windingPanel}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>🔵 Stator Winding</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
+              <input
+                type="text"
+                value={frequencies['stator_global_freq'] || ''}
+                onChange={e => handleFreqChange('stator_global_freq', e.target.value)}
+                style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
+                placeholder="e.g. 1kHz"
+              />
+            </div>
           </div>
 
           {/* Stator grid: Resistance+Inductance left, Capacitance right */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="stator_res" unit="ohm" captured={captured} onCapture={handleCapture} correctWindingTo20={correctWindingTo20} temp={temperature} />
-              <MeasGroup title="Winding Inductance" keys={IND_KEYS} prefix="stator_ind" unit="mH"  captured={captured} onCapture={handleCapture} />
+              <MeasGroup
+                title="Winding Resistance"
+                keys={RES_KEYS}
+                prefix="stator_res"
+                unit="ohm"
+                captured={captured}
+                frequencies={frequencies}
+                onCapture={handleCapture}
+                correctWindingTo20={correctWindingTo20}
+                temp={temperature}
+                focusedField={focusedField}
+                editValues={editValues}
+                handleFocus={handleFocus}
+                handleTextChange={handleTextChange}
+                handleBlur={handleBlur}
+                handleFreqChange={handleFreqChange}
+                handleCopyFreq={handleCopyFreq}
+              />
+              <MeasGroup
+                title="Winding Inductance"
+                keys={IND_KEYS}
+                prefix="stator_ind"
+                unit="mH"
+                captured={captured}
+                frequencies={frequencies}
+                onCapture={handleCapture}
+                focusedField={focusedField}
+                editValues={editValues}
+                handleFocus={handleFocus}
+                handleTextChange={handleTextChange}
+                handleBlur={handleBlur}
+                handleFreqChange={handleFreqChange}
+                handleCopyFreq={handleCopyFreq}
+              />
             </div>
-            <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="stator_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
+            <MeasGroup
+              title="Winding Capacitance"
+              keys={CAP_KEYS}
+              prefix="stator_cap"
+              unit="nF"
+              captured={captured}
+              frequencies={frequencies}
+              onCapture={handleCapture}
+              focusedField={focusedField}
+              editValues={editValues}
+              handleFocus={handleFocus}
+              handleTextChange={handleTextChange}
+              handleBlur={handleBlur}
+              handleFreqChange={handleFreqChange}
+              handleCopyFreq={handleCopyFreq}
+            />
           </div>
 
           {/* Analysis box */}
@@ -497,7 +735,12 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
                   onChange={e => {
                     const v = e.target.value;
                     setTemperature(v);
-                    if (record) Object.keys(captured).forEach(f => api.saveMultimeterField(record.id, f, captured[f], parseFloat(v) || 0));
+                    if (record) {
+                      const tempNum = parseFloat(v) || 0;
+                      Object.keys(captured).forEach(f => {
+                        api.saveMultimeterField(record.id, f, { temperature: tempNum });
+                      });
+                    }
                   }}
                   style={{ width: 65, border: '1px solid #cbd5e1', borderRadius: 6, padding: '5px 8px', fontSize: 13, outline: 'none', fontWeight: 700 }}
                   min="0" max="200"
@@ -512,14 +755,71 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         <div style={S.windingPanel}>
           <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>🔴 Rotor Winding</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
+              <input
+                type="text"
+                value={frequencies['rotor_global_freq'] || ''}
+                onChange={e => handleFreqChange('rotor_global_freq', e.target.value)}
+                style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
+                placeholder="e.g. 1kHz"
+              />
+            </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup title="Winding Resistance" keys={RES_KEYS} prefix="rotor_res" unit="ohm" captured={captured} onCapture={handleCapture} correctWindingTo20={correctWindingTo20} temp={temperature} />
-              <MeasGroup title="Winding Inductance" keys={IND_KEYS} prefix="rotor_ind" unit="mH"  captured={captured} onCapture={handleCapture} />
+              <MeasGroup
+                title="Winding Resistance"
+                keys={RES_KEYS}
+                prefix="rotor_res"
+                unit="ohm"
+                captured={captured}
+                frequencies={frequencies}
+                onCapture={handleCapture}
+                correctWindingTo20={correctWindingTo20}
+                temp={temperature}
+                focusedField={focusedField}
+                editValues={editValues}
+                handleFocus={handleFocus}
+                handleTextChange={handleTextChange}
+                handleBlur={handleBlur}
+                handleFreqChange={handleFreqChange}
+                handleCopyFreq={handleCopyFreq}
+              />
+              <MeasGroup
+                title="Winding Inductance"
+                keys={IND_KEYS}
+                prefix="rotor_ind"
+                unit="mH"
+                captured={captured}
+                frequencies={frequencies}
+                onCapture={handleCapture}
+                focusedField={focusedField}
+                editValues={editValues}
+                handleFocus={handleFocus}
+                handleTextChange={handleTextChange}
+                handleBlur={handleBlur}
+                handleFreqChange={handleFreqChange}
+                handleCopyFreq={handleCopyFreq}
+              />
             </div>
-            <MeasGroup title="Winding Capacitance" keys={CAP_KEYS} prefix="rotor_cap" unit="nF"  captured={captured} onCapture={handleCapture} />
+            <MeasGroup
+              title="Winding Capacitance"
+              keys={CAP_KEYS}
+              prefix="rotor_cap"
+              unit="nF"
+              captured={captured}
+              frequencies={frequencies}
+              onCapture={handleCapture}
+              focusedField={focusedField}
+              editValues={editValues}
+              handleFocus={handleFocus}
+              handleTextChange={handleTextChange}
+              handleBlur={handleBlur}
+              handleFreqChange={handleFreqChange}
+              handleCopyFreq={handleCopyFreq}
+            />
           </div>
 
           {/* Analysis box */}
