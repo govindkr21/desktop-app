@@ -15,17 +15,32 @@ let multimeterSocket = null;
 let mainWindow = null;
 let meggerRxBuffer = '';
 let multimeterRxBuffer = '';
+let multimeterInterval = null;
+let multimeterMode = 'R';
 
 // MIT 525 stream: **,HH:MM:SS,nomV,actV,current,resistance,mode,pass,
 const MEGGER_RECORD_RE = /\*\*,\d{2}:\d{2}:\d{2},\d+,\d+,[^,\r\n]+,[^,\r\n]+,\d+,[YNyn],/i;
 
 function emitDeviceRaw(device, chunk) {
-  const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-  console.log(`[${device}] SERIAL:`, text);
-  if (mainWindow) {
-    mainWindow.webContents.send(`${device}:raw`, text);
+  // Serial reads are bytes. If baud/format is wrong, decoding as UTF-8 looks like "garbage".
+  // Detect low-printable content and show HEX so users can immediately see it's a settings issue.
+  const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
+  const asUtf8 = buf.toString('utf8');
+
+  let printable = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    // printable ASCII + common whitespace
+    if ((b >= 32 && b <= 126) || b === 9 || b === 10 || b === 13) printable++;
   }
-  return text;
+  const ratio = buf.length ? printable / buf.length : 1;
+  const text = ratio < 0.75
+    ? `[HEX ${buf.length}B] ` + buf.toString('hex').match(/.{1,2}/g).join(' ')
+    : asUtf8;
+
+  console.log(`[${device}] SERIAL:`, text);
+  if (mainWindow) mainWindow.webContents.send(`${device}:raw`, text);
+  return ratio < 0.75 ? '' : asUtf8;
 }
 
 function splitRxBuffer(buffer) {
@@ -181,13 +196,7 @@ function connectMegger(options) {
   }
 
   // Always clean up existing connections first
-  if (meggerPort && meggerPort.isOpen) {
-    try { meggerPort.close(); } catch(e) { console.error('[Megger] Close error:', e.message); }
-  }
-  if (meggerSocket) {
-    try { meggerSocket.destroy(); } catch(e) { console.error('[Megger TCP] Destroy error:', e.message); }
-    meggerSocket = null;
-  }
+  disconnectMegger();
 
   if (connectionType === 'tcp') {
     const parsed = parseHostAndPort(host, port);
@@ -226,7 +235,7 @@ function connectMegger(options) {
       dataBits: 8,
       parity: 'none',
       stopBits: 1,
-      autoOpen: true,
+      autoOpen: false,
     });
 
     meggerPort.on('open', () => {
@@ -244,6 +253,17 @@ function connectMegger(options) {
     meggerPort.on('close', () => {
       console.log('[Megger] Disconnected');
       if (mainWindow) mainWindow.webContents.send('megger:stopped');
+      setImmediate(() => {
+        disconnectMegger();
+      });
+    });
+
+    meggerPort.open((err) => {
+      if (err) {
+        console.error('[Megger] Open error:', err.message);
+        if (mainWindow) mainWindow.webContents.send('device:error', 'Megger: ' + err.message);
+        disconnectMegger();
+      }
     });
   }
 }
@@ -305,12 +325,24 @@ function parseMeggerLine(line) {
 
 function disconnectMegger() {
   meggerRxBuffer = '';
-  if (meggerPort && meggerPort.isOpen) {
-    try { meggerPort.close(); } catch(e) { console.error('[Megger] Close error:', e.message); }
+  if (meggerPort) {
+    const portToClose = meggerPort;
+    meggerPort = null;
+    try {
+      portToClose.removeAllListeners();
+      if (portToClose.isOpen) {
+        portToClose.close((err) => {
+          if (err) console.error('[Megger] Close callback error:', err.message);
+        });
+      }
+    } catch(e) {
+      console.error('[Megger] Close error:', e.message);
+    }
   }
   if (meggerSocket) {
     try { meggerSocket.destroy(); } catch(e) { console.error('[Megger TCP] Destroy error:', e.message); }
     meggerSocket = null;
+    if (mainWindow) mainWindow.webContents.send('megger:stopped');
   }
 }
 
@@ -319,6 +351,29 @@ function disconnectMegger() {
 // ─────────────────────────────────────────────
 // NOTE: Replace 'COM4' with actual port.
 // Replace command strings with values from multimeter manual.
+
+function startMultimeterPolling() {
+  stopMultimeterPolling();
+  multimeterInterval = setInterval(() => {
+    const query = 'FETCh?\r\n';
+    if (multimeterPort && multimeterPort.isOpen) {
+      multimeterPort.write(query, (err) => {
+        if (err) console.error('[Multimeter] Poll write error:', err.message);
+      });
+    } else if (multimeterSocket && !multimeterSocket.destroyed) {
+      multimeterSocket.write(query, (err) => {
+        if (err) console.error('[Multimeter TCP] Poll write error:', err.message);
+      });
+    }
+  }, 1000);
+}
+
+function stopMultimeterPolling() {
+  if (multimeterInterval) {
+    clearInterval(multimeterInterval);
+    multimeterInterval = null;
+  }
+}
 
 function connectMultimeter(options) {
   let connectionType = 'serial';
@@ -338,13 +393,7 @@ function connectMultimeter(options) {
   }
 
   // Always clean up existing connections first
-  if (multimeterPort && multimeterPort.isOpen) {
-    try { multimeterPort.close(); } catch(e) { console.error('[Multimeter] Close error:', e.message); }
-  }
-  if (multimeterSocket) {
-    try { multimeterSocket.destroy(); } catch(e) { console.error('[Multimeter TCP] Destroy error:', e.message); }
-    multimeterSocket = null;
-  }
+  disconnectMultimeter();
 
   if (connectionType === 'tcp') {
     const parsed = parseHostAndPort(host, port);
@@ -368,6 +417,7 @@ function connectMultimeter(options) {
       multimeterSocket.connect({ host, port }, () => {
         console.log(`[Multimeter TCP] Connected to ${host}:${port}`);
         if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+        startMultimeterPolling();
       });
     } catch (err) {
       console.error('[Multimeter TCP] Synchronous connect error:', err.message);
@@ -383,12 +433,13 @@ function connectMultimeter(options) {
       dataBits: 8,
       parity: 'none',
       stopBits: 1,
-      autoOpen: true,
+      autoOpen: false,
     });
 
     multimeterPort.on('open', () => {
       console.log('[Multimeter] Connected on', portPath);
       if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+      startMultimeterPolling();
     });
 
     wireMultimeterInput(multimeterPort);
@@ -401,14 +452,26 @@ function connectMultimeter(options) {
     multimeterPort.on('close', () => {
       console.log('[Multimeter] Disconnected');
       if (mainWindow) mainWindow.webContents.send('multimeter:stopped');
+      setImmediate(() => {
+        disconnectMultimeter();
+      });
+    });
+
+    multimeterPort.open((err) => {
+      if (err) {
+        console.error('[Multimeter] Open error:', err.message);
+        if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter: ' + err.message);
+        disconnectMultimeter();
+      }
     });
   }
 }
 
 // ── Send command to multimeter to change mode ──
 // Replace command strings with actual commands from device manual
-function sendMultimeterCommand(mode, frequency, secondary) {
-  const command = buildCommand(mode, frequency, secondary);
+function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
+  multimeterMode = mode;
+  const command = buildCommand(mode, frequency, secondary, equivalent);
   
   if (multimeterPort && multimeterPort.isOpen) {
     multimeterPort.write(command + '\r\n', (err) => {
@@ -426,9 +489,46 @@ function sendMultimeterCommand(mode, frequency, secondary) {
 }
 
 // ── Replace with actual command format from manual ──
-function buildCommand(mode, frequency, secondary) {
-  // EXAMPLE — update with actual device protocol
-  return `SET:${mode}:${frequency}:${secondary}`;
+function buildCommand(mode, frequency, secondary, equivalent) {
+  // mode: 'L', 'C', 'R'
+  // frequency: '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'
+  // secondary: 'Q', 'D', 'R', 'DEG'
+  // equivalent: 'SER', 'PAL'
+
+  let freqVal = '1000';
+  if (frequency) {
+    const f = frequency.toLowerCase();
+    if (f.includes('100hz')) freqVal = '100';
+    else if (f.includes('120hz')) freqVal = '120';
+    else if (f.includes('1khz')) freqVal = '1000';
+    else if (f.includes('10khz')) freqVal = '10000';
+    else if (f.includes('100khz')) freqVal = '100000';
+  }
+
+  let modeVal = 'C';
+  if (mode) {
+    modeVal = mode.toUpperCase();
+  }
+
+  let secVal = 'D';
+  if (secondary) {
+    const s = secondary.toUpperCase();
+    if (s === 'R' || s === 'ESR') {
+      secVal = 'ESR';
+    } else if (s === 'DEG' || s === 'THETA') {
+      secVal = 'THETA';
+    } else {
+      secVal = s;
+    }
+  }
+
+  let equivVal = 'SER';
+  if (equivalent) {
+    equivVal = equivalent.toUpperCase() === 'PAL' ? 'PAL' : 'SER';
+  }
+
+  // BK Precision 880 SCPI configuration command chain
+  return `FUNC:impa ${modeVal};:FUNC:impb ${secVal};:FUNC:EQU ${equivVal};:FREQ ${freqVal}`;
 }
 
 function parseMultimeterLine(line) {
@@ -436,18 +536,49 @@ function parseMultimeterLine(line) {
   if (clean.toUpperCase().startsWith('SERIAL:')) {
     clean = clean.slice(7).trim();
   }
-  const val = parseFloat(clean);
-  return isNaN(val) ? null : val;
+  
+  // The LCR meter returns a comma-separated string: <PrimaryValue>,<SecondaryValue>
+  // e.g. +9.92758e-15,-9.73668e+01
+  const parts = clean.split(',');
+  let val = parseFloat(parts[0]);
+  if (isNaN(val)) return null;
+
+  // Scale the parsed value according to the active multimeterMode
+  if (multimeterMode === 'C') {
+    // Convert Farads to nanofarads (nF)
+    val = val * 1e9;
+  } else if (multimeterMode === 'L') {
+    // Convert Henries to millihenries (mH)
+    val = val * 1e3;
+  }
+
+  let secVal = parseFloat(parts[1]);
+  if (isNaN(secVal)) secVal = 0;
+
+  return { primary: val, secondary: secVal };
 }
 
 function disconnectMultimeter() {
+  stopMultimeterPolling();
   multimeterRxBuffer = '';
-  if (multimeterPort && multimeterPort.isOpen) {
-    try { multimeterPort.close(); } catch(e) { console.error('[Multimeter] Close error:', e.message); }
+  if (multimeterPort) {
+    const portToClose = multimeterPort;
+    multimeterPort = null;
+    try {
+      portToClose.removeAllListeners();
+      if (portToClose.isOpen) {
+        portToClose.close((err) => {
+          if (err) console.error('[Multimeter] Close callback error:', err.message);
+        });
+      }
+    } catch(e) {
+      console.error('[Multimeter] Close error:', e.message);
+    }
   }
   if (multimeterSocket) {
     try { multimeterSocket.destroy(); } catch(e) { console.error('[Multimeter TCP] Destroy error:', e.message); }
     multimeterSocket = null;
+    if (mainWindow) mainWindow.webContents.send('multimeter:stopped');
   }
 }
 
@@ -493,7 +624,7 @@ function startMultimeterSimulator(win, mode = 'R') {
     const value = parseFloat((base + (Math.random() - 0.5) * base * 0.08).toFixed(
       mode === 'C' ? 6 : mode === 'L' ? 4 : 1
     ));
-    mainWindow.webContents.send('multimeter:live', value);
+    mainWindow.webContents.send('multimeter:live', { primary: value, secondary: 0.005 });
   }, 400);
 }
 

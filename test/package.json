@@ -46,8 +46,8 @@
     "forge": {
       "packagerConfig": {
         "asar": true,
-        "name": "ElectricalTestingSuite",
-        "executableName": "ElectricalTestingSuite",
+        "name": "Sarox Winding & Insulation Tester",
+        "executableName": "Sarox Winding & Insulation Tester",
         "icon": "src/assets/icon"
       },
       "rebuildConfig": {},
@@ -55,7 +55,7 @@
         {
           "name": "@electron-forge/maker-squirrel",
           "config": {
-            "name": "ElectricalTestingSuite"
+            "name": "Sarox_Winding_Insulation_Tester"
           }
         },
         {

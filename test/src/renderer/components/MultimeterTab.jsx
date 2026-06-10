@@ -184,11 +184,11 @@ function MeasGroup({
 }
 
 // ── RLC Setup Modal ──────────────────────────────────────
-function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onClose }) {
+function RLCSetupModal({ mode, freq, secondary, equivalent, liveValue, liveSecondaryValue, demoMode, onSave, onClose }) {
   const [localMode,      setLocalMode]      = useState(mode);
   const [localFreq,      setLocalFreq]      = useState(freq);
   const [localSecondary, setLocalSecondary] = useState(secondary);
-  const [localPort,      setLocalPort]      = useState('COM5');
+  const [localEquivalent, setLocalEquivalent] = useState(equivalent || 'SER');
   const [localRange,     setLocalRange]     = useState('Auto');
 
   const unit = localMode === 'R' ? 'Ohm' : localMode === 'L' ? 'mH' : 'nF';
@@ -219,25 +219,10 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
         {/* Modal body */}
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-          {/* Serial Port — only shown in real mode */}
-          {!demoMode && (
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>SERIAL PORT</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, color: '#64748b' }}>%</span>
-                <select value={localPort} onChange={e => setLocalPort(e.target.value)} style={selectStyle}>
-                  {['COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8'].map(p => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
           {/* L/C/R and Q/D/R row */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>L / C / R</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>L / C / R (Primary)</label>
               <select value={localMode} onChange={e => setLocalMode(e.target.value)} style={selectStyle}>
                 <option value="L">L (Inductance)</option>
                 <option value="C">C (Capacitance)</option>
@@ -245,7 +230,7 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
               </select>
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>Q / D / R</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>Q / D / R (Secondary)</label>
               <select value={localSecondary} onChange={e => setLocalSecondary(e.target.value)} style={selectStyle}>
                 <option value="Q">Q (Quality Factor)</option>
                 <option value="D">D (Dissipation)</option>
@@ -254,36 +239,60 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
             </div>
           </div>
 
-          {/* FREQ and RANGE row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {/* FREQ and EQUIVALENT row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 12 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>FREQ</label>
               <select value={localFreq} onChange={e => setLocalFreq(e.target.value)} style={selectStyle}>
+                <option value="100Hz">100 Hz</option>
                 <option value="120Hz">120 Hz</option>
                 <option value="1kHz">1 kHz</option>
+                <option value="10kHz">10 kHz</option>
+                <option value="100kHz">100 kHz</option>
               </select>
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>{localMode} RANG {localFreq}</label>
-              <select value={localRange} onChange={e => setLocalRange(e.target.value)} style={selectStyle}>
-                <option value="Auto">Auto</option>
-                <option value="10nF">10 nF</option>
-                <option value="100nF">100 nF</option>
-                <option value="1uF">1 µF</option>
-                <option value="10uF">10 µF</option>
-                <option value="100uF">100 µF</option>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>EQUIVALENT</label>
+              <select value={localEquivalent} onChange={e => setLocalEquivalent(e.target.value)} style={selectStyle}>
+                <option value="SER">Series (SER)</option>
+                <option value="PAL">Parallel (PAL)</option>
               </select>
             </div>
           </div>
 
-          {/* Live value preview */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>Value</span>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: '#10b981' }}>
-                {liveValue.toLocaleString(undefined, { minimumFractionDigits: 3 })}
-              </span>
-              <span style={{ fontSize: 13, color: '#64748b', fontWeight: 600 }}>{unit}</span>
+          {/* Range selection */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>{localMode} RANGE ({localFreq})</label>
+            <select value={localRange} onChange={e => setLocalRange(e.target.value)} style={selectStyle}>
+              <option value="Auto">Auto</option>
+              <option value="10nF">10 nF</option>
+              <option value="100nF">100 nF</option>
+              <option value="1uF">1 µF</option>
+              <option value="10uF">10 µF</option>
+              <option value="100uF">100 µF</option>
+            </select>
+          </div>
+
+          {/* Live values preview */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {/* Primary display */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>Primary ({localMode})</span>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: 18, fontWeight: 700, fontFamily: 'monospace', color: '#10b981' }}>
+                  {liveValue.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                </span>
+                <span style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>{unit}</span>
+              </div>
+            </div>
+            {/* Secondary display */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>Secondary ({localSecondary})</span>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: 18, fontWeight: 700, fontFamily: 'monospace', color: '#3b82f6' }}>
+                  {liveSecondaryValue.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -303,7 +312,7 @@ function RLCSetupModal({ mode, freq, secondary, liveValue, demoMode, onSave, onC
               Close
             </button>
             <button
-              onClick={() => onSave({ mode: localMode, freq: localFreq, secondary: localSecondary, port: localPort })}
+              onClick={() => onSave({ mode: localMode, freq: localFreq, secondary: localSecondary, equivalent: localEquivalent })}
               style={{ padding: '8px 20px', borderRadius: 6, border: 'none', background: '#eab308', color: '#1e293b', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
             >
               Save
@@ -321,7 +330,9 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const [mode,      setMode]      = useState('R');
   const [freq,      setFreq]      = useState('120Hz');
   const [secondary, setSecondary] = useState('D');
+  const [equivalent, setEquivalent] = useState('SER');
   const [liveValue, setLiveValue] = useState(0);
+  const [liveSecondaryValue, setLiveSecondaryValue] = useState(0);
   const [captured,  setCaptured]  = useState({});
   const [frequencies, setFrequencies] = useState({});
   const [temperature, setTemperature] = useState('25');
@@ -340,9 +351,16 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
   const multimeterOnline = multimeterStatus === 'connected';
 
+  // Re-testing confirmation tracking
+  const hasConfirmedReTest = useRef(false);
+  const hadDataOnLoad = useRef(false);
+
   // Load saved data on mount
   useEffect(() => {
     if (!record) return;
+    hasConfirmedReTest.current = false;
+    hadDataOnLoad.current = false;
+
     api.getMultimeterData(record.id).then(data => {
       const vals = {};
       const freqs = {};
@@ -359,6 +377,10 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       setCaptured(vals);
       setFrequencies(freqs);
       setTemperature(tempVal);
+
+      if (Object.keys(vals).length > 0) {
+        hadDataOnLoad.current = true;
+      }
     });
   }, [record?.id]);
 
@@ -373,6 +395,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       liveRef.current = setInterval(() => {
         const noise = (Math.random() - 0.5) * base * 0.05;
         setLiveValue(parseFloat((base + noise).toFixed(3)));
+        setLiveSecondaryValue(parseFloat((Math.random() * 0.1).toFixed(4)));
       }, 400);
     } else {
       if (multimeterOnline) {
@@ -386,7 +409,8 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         api.onMultimeterLive(v => {
           lastValueTime.current = Date.now();
           setTelemetryAlert(false);
-          setLiveValue(v);
+          setLiveValue(v.primary);
+          setLiveSecondaryValue(v.secondary);
         });
       }
     }
@@ -400,7 +424,24 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     };
   }, [mode, demoMode, multimeterOnline]);
 
+  const confirmReTest = () => {
+    if (hadDataOnLoad.current && !hasConfirmedReTest.current) {
+      const utilityTag = record?.motorUtilityTag;
+      const motorName = utilityTag ? `motor "${utilityTag}"` : "this motor";
+      const confirmed = window.confirm(
+        `Are you sure you are re-testing ${motorName}? To save new results for a different motor, create a new record instead.`
+      );
+      if (confirmed) {
+        hasConfirmedReTest.current = true;
+        return true;
+      }
+      return false;
+    }
+    return true;
+  };
+
   const handleCapture = async (fieldKey) => {
+    if (!confirmReTest()) return;
     const val = liveValue;
     setCaptured(prev => ({ ...prev, [fieldKey]: val }));
     if (record) {
@@ -411,14 +452,15 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     }
   };
 
-  const handleSetupSave = async ({ mode: m, freq: f, secondary: s }) => {
+  const handleSetupSave = async ({ mode: m, freq: f, secondary: s, equivalent: eq }) => {
     setMode(m);
     setFreq(f);
     setSecondary(s);
+    setEquivalent(eq);
     setShowSetup(false);
     if (!demoMode && api.sendMultimeterCommand) {
       try {
-        await api.sendMultimeterCommand(m, f, s);
+        await api.sendMultimeterCommand(m, f, s, eq);
       } catch (err) {
         console.error('Failed to send multimeter setup command:', err);
       }
@@ -445,6 +487,18 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       const parsed = parseFloat(rawStr);
       if (!isNaN(parsed)) {
         finalVal = parsed;
+      }
+    }
+
+    const currentVal = captured[fieldKey];
+    if (finalVal !== currentVal) {
+      if (!confirmReTest()) {
+        setEditValues(prev => {
+          const copy = { ...prev };
+          delete copy[fieldKey];
+          return copy;
+        });
+        return;
       }
     }
 
@@ -837,22 +891,37 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
           {/* Live readout display */}
           <div style={{ background: '#0f172a', borderRadius: 10, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-            <div>
-              <span style={{ fontSize: 9, color: '#475569', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Multimeter Readout</span>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#10b981', letterSpacing: -1 }}>
-                  {((correctWindingTo20 && mode === 'R')
-                    ? parseFloat((liveValue * (254.5 / (234.5 + (isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature))))).toFixed(3))
-                    : liveValue
-                  ).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-                </span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: '#4ade80' }}>{unit}</span>
+            <div style={{ display: 'flex', gap: 32 }}>
+              <div>
+                <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Primary ({mode})</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#10b981', letterSpacing: -1 }}>
+                    {((correctWindingTo20 && mode === 'R')
+                      ? parseFloat((liveValue * (254.5 / (234.5 + (isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature))))).toFixed(3))
+                      : liveValue
+                    ).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                  </span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#4ade80' }}>{unit}</span>
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Secondary ({secondary})</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#38bdf8', letterSpacing: -1 }}>
+                    {liveSecondaryValue.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+                  </span>
+                </div>
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }}>
-              {[['Mode', mode === 'R' ? 'Resistance' : mode === 'L' ? 'Inductance' : 'Capacitance'], ['Freq', freq], ['Sec', secondary]].map(([l, v]) => (
-                <div key={l} style={{ fontSize: 10, color: '#475569' }}>
-                  {l}: <strong style={{ color: '#94a3b8' }}>{v}</strong>
+              {[
+                ['Mode', mode === 'R' ? 'Resistance' : mode === 'L' ? 'Inductance' : 'Capacitance'],
+                ['Freq', freq],
+                ['Sec', secondary],
+                ['Equivalent', equivalent === 'PAL' ? 'Parallel' : 'Series']
+              ].map(([l, v]) => (
+                <div key={l} style={{ fontSize: 10, color: '#64748b' }}>
+                  {l}: <strong style={{ color: '#cbd5e1' }}>{v}</strong>
                 </div>
               ))}
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
@@ -871,7 +940,9 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           mode={mode}
           freq={freq}
           secondary={secondary}
+          equivalent={equivalent}
           liveValue={liveValue}
+          liveSecondaryValue={liveSecondaryValue}
           demoMode={demoMode}
           onSave={handleSetupSave}
           onClose={() => setShowSetup(false)}

@@ -14,9 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteRecord:    (id)             => ipcRenderer.invoke('db:deleteRecord', id),
 
   // ── Insulation data ──────────────────────────
-  saveInsulationRow:  (recordId, tab, tableId, row) => ipcRenderer.invoke('db:saveInsulationRow', recordId, tab, tableId, row),
-  getInsulationData:  (recordId)                    => ipcRenderer.invoke('db:getInsulationData', recordId),
-  clearInsulationTab: (recordId, tab, tableId)      => ipcRenderer.invoke('db:clearInsulationTab', recordId, tab, tableId),
+  saveInsulationRow:      (recordId, tab, tableId, row)                  => ipcRenderer.invoke('db:saveInsulationRow',      recordId, tab, tableId, row),
+  getInsulationData:      (recordId)                                      => ipcRenderer.invoke('db:getInsulationData',      recordId),
+  clearInsulationTab:     (recordId, tab, tableId)                       => ipcRenderer.invoke('db:clearInsulationTab',     recordId, tab, tableId),
+  saveInsulationMeta:     (recordId, tab, tableId, meta)                 => ipcRenderer.invoke('db:saveInsulationMeta',     recordId, tab, tableId, meta),
+  renameInsulationTable:  (recordId, tab, oldTableId, newTableId)        => ipcRenderer.invoke('db:renameInsulationTable',  recordId, tab, oldTableId, newTableId),
+  deleteInsulationTable:  (recordId, tab, tableId)                       => ipcRenderer.invoke('db:deleteInsulationTable',  recordId, tab, tableId),
 
   // ── Multimeter data ──────────────────────────
   saveMultimeterField: (recordId, field, value, temp, frequency) => ipcRenderer.invoke('db:saveMultimeterField', recordId, field, value, temp, frequency),
@@ -29,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Shell ────────────────────────────────────
   openPath: (filePath) => ipcRenderer.invoke('shell:openPath', filePath),
+  openLogs: () => ipcRenderer.invoke('shell:openLogs'),
 
   // ── Serial port events (Phase 5 - device communication) ──
   // These will be wired up when serial.js is implemented
@@ -59,5 +63,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('serial:connectMultimeter', { portPath: portOrOpts, baudRate });
   },
   disconnectMultimeter:  ()                   => ipcRenderer.invoke('serial:disconnectMultimeter'),
-  sendMultimeterCommand: (mode, freq, secondary) => ipcRenderer.invoke('serial:sendMultimeterCommand', { mode, freq, secondary }),
+  sendMultimeterCommand: (mode, freq, secondary, equivalent) => ipcRenderer.invoke('serial:sendMultimeterCommand', { mode, freq, secondary, equivalent }),
 });

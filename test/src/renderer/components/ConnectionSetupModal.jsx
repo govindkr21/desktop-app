@@ -86,19 +86,31 @@ export default function ConnectionSetupModal({
   const [meggerRawLines, setMeggerRawLines] = useState([]);
   const [multiRawLines, setMultiRawLines] = useState([]);
 
+  // Helper to parse TCP string like "TCP://192.168.1.50:5000"
+  const parseTcpString = (str) => {
+    if (str && str.startsWith('TCP://')) {
+      const parts = str.slice(6).split(':');
+      return { host: parts[0], port: parseInt(parts[1]) || 5000 };
+    }
+    return { host: '127.0.0.1', port: 5000 };
+  };
+
+  const meggerTcp = parseTcpString(meggerPort);
+  const multiTcp = parseTcpString(multimeterPort);
+
   // Megger configurations
-  const [mConnType, setMConnType] = useState('serial');
-  const [mPort, setMPort] = useState('COM3');
-  const [mBaud, setMBaud] = useState(9600);
-  const [mHost, setMHost] = useState('127.0.0.1');
-  const [mTcpPort, setMTcpPort] = useState(5000);
+  const [mConnType, setMConnType] = useState(meggerPort && meggerPort.startsWith('TCP://') ? 'tcp' : 'serial');
+  const [mPort, setMPort] = useState(meggerPort && !meggerPort.startsWith('TCP://') ? meggerPort : 'COM3');
+  const [mBaud, setMBaud] = useState(38400);
+  const [mHost, setMHost] = useState(meggerTcp.host);
+  const [mTcpPort, setMTcpPort] = useState(meggerTcp.port);
 
   // Multimeter configurations
-  const [uConnType, setUConnType] = useState('serial');
-  const [uPort, setUPort] = useState('COM4');
+  const [uConnType, setUConnType] = useState(multimeterPort && multimeterPort.startsWith('TCP://') ? 'tcp' : 'serial');
+  const [uPort, setUPort] = useState(multimeterPort && !multimeterPort.startsWith('TCP://') ? multimeterPort : 'COM4');
   const [uBaud, setUBaud] = useState(9600);
-  const [uHost, setUHost] = useState('127.0.0.1');
-  const [uTcpPort, setUTcpPort] = useState(5000);
+  const [uHost, setUHost] = useState(multiTcp.host);
+  const [uTcpPort, setUTcpPort] = useState(multiTcp.port);
 
   // Scan available COM ports on mount
   useEffect(() => {
@@ -124,12 +136,17 @@ export default function ConnectionSetupModal({
     try {
       const result = await api.listSerialPorts();
       if (result.success) {
-        setPorts(result.ports || []);
-        if (result.ports && result.ports.length > 0) {
-          const firstPort = result.ports[0].path;
-          // Set defaults if currently empty
-          if (!meggerPort) setMPort(firstPort);
-          if (!multimeterPort) setUPort(firstPort);
+        const activePorts = result.ports || [];
+        setPorts(activePorts);
+        if (activePorts.length > 0) {
+          const firstPort = activePorts[0].path;
+          // Set defaults if currently empty and selected port is not in list of active ports
+          if (!meggerPort && !activePorts.some(p => p.path === mPort)) {
+            setMPort(firstPort);
+          }
+          if (!multimeterPort && !activePorts.some(p => p.path === uPort)) {
+            setUPort(firstPort);
+          }
         }
       }
     } catch (e) {
@@ -181,6 +198,7 @@ export default function ConnectionSetupModal({
     }
   }
 
+  // Closes app serial/TCP only — does not power off or stop a test on the Megger.
   async function disconnectMeggerDevice() {
     try {
       await api.disconnectMegger();
@@ -334,6 +352,9 @@ export default function ConnectionSetupModal({
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, background: '#f0fdf4', borderRadius: 8, padding: '12px 10px', border: '1px solid #dcfce7' }}>
                     <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d' }}>Megger MIT 525 Active</span>
                     <span style={{ fontSize: 11, color: '#166534', fontFamily: 'monospace', fontWeight: 600 }}>Port: {meggerPort}</span>
+                    <span style={{ fontSize: 10, color: '#166534', textAlign: 'center', lineHeight: 1.35 }}>
+                      Disconnect only closes this app&apos;s link. The Megger keeps running.
+                    </span>
                   </div>
                   <RawSerialLog
                     title="Live raw stream"
@@ -403,9 +424,10 @@ export default function ConnectionSetupModal({
                   <>
                     <button
                       onClick={disconnectMeggerDevice}
-                      style={{ flex: 1, padding: '7px 10px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                      title="Closes the COM/TCP connection in this app only. Does not power off or stop the Megger test."
+                      style={{ flex: 1.4, padding: '7px 8px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: 'pointer', lineHeight: 1.25 }}
                     >
-                      ❌ Disconnect
+                      🔌 Disconnect (keep Megger running)
                     </button>
                     <button
                       onClick={restartMeggerDevice}
@@ -557,7 +579,24 @@ export default function ConnectionSetupModal({
           </div>
 
           {/* Setup Footer Note */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid #e2e8f0', paddingTop: 14, marginTop: 4 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #e2e8f0', paddingTop: 14, marginTop: 4 }}>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await api.openLogs();
+                } catch (err) {
+                  console.error('Failed to open log folder:', err);
+                }
+              }}
+              style={{
+                padding: '8px 16px', borderRadius: 8, border: '1px solid #cbd5e1',
+                background: '#f1f5f9', color: '#475569', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 5, transition: 'all 0.15s'
+              }}
+            >
+              📂 View App Logs
+            </button>
             <button
               onClick={onCancel}
               style={{

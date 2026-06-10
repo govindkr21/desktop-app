@@ -1,8 +1,15 @@
 // ─────────────────────────────────────────────
 // src/main/index.js  —  Electron Main Process
 // ─────────────────────────────────────────────
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, powerMonitor } = require('electron');
 const path = require('path');
+
+// Must match packagerConfig.name so dev (`npm start`) and installed .exe share one data folder.
+app.setName('Sarox Winding & Insulation Tester');
+
+// Initialize file logging
+const logger = require('./logger');
+logger.init();
 
 // ── Top-level requires so webpack asset-relocator traces native deps correctly ──
 const _serial = require('./serial'); const serial = _serial.default || _serial;
@@ -63,6 +70,25 @@ app.on('ready', () => {
   db.init();
 
   createWindow();
+
+  // Cleanly close serial ports when the laptop goes to sleep / suspends
+  powerMonitor.on('suspend', () => {
+    console.log('[Main] System suspending. Closing all active device connections.');
+    try {
+      serial.disconnectMegger();
+      serial.disconnectMultimeter();
+    } catch (err) {
+      console.error('[Main] Error closing connections on suspend:', err.message);
+    }
+  });
+});
+
+app.on('before-quit', () => {
+  try {
+    require('./database').flush();
+  } catch (e) {
+    console.error('[DB] Flush on quit failed:', e.message);
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -81,6 +107,7 @@ const db = () => require('./database');
 
 // ── Records ───────────────────────────────────
 ipcMain.handle('db:getAllRecords', () => db().getAllRecords());
+ipcMain.handle('db:getStorageInfo', () => db().getStorageInfo());
 ipcMain.handle('db:createRecord', (_, data) => db().createRecord(data));
 ipcMain.handle('db:getRecord', (_, id) => db().getRecord(id));
 ipcMain.handle('db:updateRecord', (_, id, data) => db().updateRecord(id, data));
@@ -91,6 +118,9 @@ ipcMain.handle('db:deleteRecord', (_, id) => db().deleteRecord(id));
 ipcMain.handle('db:saveInsulationRow', (_, recordId, tab, tableId, row) => db().saveInsulationRow(recordId, tab, tableId, row));
 ipcMain.handle('db:getInsulationData', (_, recordId) => db().getInsulationData(recordId));
 ipcMain.handle('db:clearInsulationTab', (_, recordId, tab, tableId) => db().clearInsulationTab(recordId, tab, tableId));
+ipcMain.handle('db:renameInsulationTable', (_, recordId, tab, oldTableId, newTableId) => db().renameInsulationTable(recordId, tab, oldTableId, newTableId));
+ipcMain.handle('db:deleteInsulationTable', (_, recordId, tab, tableId) => db().deleteInsulationTable(recordId, tab, tableId));
+ipcMain.handle('db:saveInsulationMeta', (_, recordId, tab, tableId, meta) => db().saveInsulationMeta(recordId, tab, tableId, meta));
 
 // ── Multimeter data ───────────────────────────
 ipcMain.handle('db:saveMultimeterField', (_, recordId, field, value, temp, frequency) => db().saveMultimeterField(recordId, field, value, temp, frequency));
@@ -118,6 +148,15 @@ ipcMain.handle('report:exportPDF', async (_, recordId) => {
 ipcMain.handle('shell:openPath', (_, filePath) => {
   shell.showItemInFolder(filePath);
   return { success: true };
+});
+
+ipcMain.handle('shell:openLogs', () => {
+  const logPath = logger.getLogPath();
+  if (logPath) {
+    shell.showItemInFolder(logPath);
+    return { success: true, logPath };
+  }
+  return { success: false, error: 'Logger not initialized' };
 });
 
 // ── Serial / Device connection ─────────────────
@@ -168,9 +207,9 @@ ipcMain.handle('serial:disconnectMultimeter', () => {
   }
 });
 
-ipcMain.handle('serial:sendMultimeterCommand', (_, { mode, freq, secondary }) => {
+ipcMain.handle('serial:sendMultimeterCommand', (_, { mode, freq, secondary, equivalent }) => {
   try {
-    serial.sendMultimeterCommand(mode, freq, secondary);
+    serial.sendMultimeterCommand(mode, freq, secondary, equivalent);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };

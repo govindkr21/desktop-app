@@ -120,6 +120,17 @@ export default function App() {
     loadRecords();
   }
 
+  async function handleDelete(id) {
+    const confirmed = window.confirm('Are you sure you want to permanently delete this test record and all its data? This cannot be undone.');
+    if (!confirmed) return;
+    try {
+      await api.deleteRecord(id);
+      loadRecords();
+    } catch (err) {
+      console.error('Failed to delete record:', err);
+    }
+  }
+
   function handleBack() {
     loadRecords();
     setScreen('start');
@@ -133,9 +144,16 @@ export default function App() {
 
   async function handleInfoChange(key, value) {
     if (!record) return;
-    const updated = await api.updateRecord(record.id, { ...record, [key]: value });
-    setRecord(updated);
-    loadRecords();
+    // Update local React state synchronously to prevent controlled inputs from lagging or losing focus
+    const updatedRecord = { ...record, [key]: value };
+    setRecord(updatedRecord);
+
+    try {
+      await api.updateRecord(record.id, updatedRecord);
+      loadRecords();
+    } catch (err) {
+      console.error('Failed to update record in database:', err);
+    }
   }
 
   const TABS = [
@@ -152,6 +170,7 @@ export default function App() {
         onNew={handleNew}
         onOpen={handleOpen}
         onDuplicate={handleDuplicate}
+        onDelete={handleDelete}
       />
     );
   }
