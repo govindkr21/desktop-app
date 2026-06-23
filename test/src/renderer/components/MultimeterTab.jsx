@@ -3,9 +3,25 @@ import { useState, useEffect, useRef } from 'react';
 
 const api = window.electronAPI;
 
+const isOverload = (val, mode) => {
+  if (val === null || val === undefined) return false;
+  let cleanVal = val;
+  if (typeof val === 'string') {
+    cleanVal = val.replace(/,/g, '');
+  }
+  const num = parseFloat(cleanVal);
+  if (isNaN(num)) return false;
+  if (num > 9.0e36) return true;
+  if (mode === 'R' || mode === 'DCR' || mode === 'Z' || mode === 'ESR') return num >= 20e6;
+  if (mode === 'L') return num >= 2e6; // 2,000,000 mH (2000 H)
+  if (mode === 'C') return num >= 2e7; // 20,000,000 nF (20 mF)
+  return false;
+};
+
 const RES_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 const IND_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 const CAP_KEYS = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
+const IMP_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 
 // ── Styles shared across the component ──────────────────
 const S = {
@@ -53,6 +69,8 @@ const S = {
 // ── Reusable measurement group ───────────────────────────
 function MeasGroup({
   title,
+  symbol,
+  onModeToggle,
   keys,
   prefix,
   unit,
@@ -67,44 +85,229 @@ function MeasGroup({
   handleTextChange,
   handleBlur,
   handleFreqChange,
-  handleCopyFreq
+  handleCopyFreq,
+  onSweep,
+  sweepingField,
+  activeSweepFreq,
+  onSelectGroup,
+  onFreqTabClick,
+  onHeaderFreqChange,
+  currentMode,
+  currentFreq
 }) {
   const groupFreqKey = `${prefix}_freq`;
   const groupFreq = frequencies[groupFreqKey] || '';
+  const isInd = prefix.includes('_ind');
+  const isImp = prefix.includes('_imp');
+  const isRes = prefix.includes('_res');
+  const isResAcSweep = isRes && currentMode === 'R';
+  const L_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+  const R_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+
+  const isActive = (prefix.includes('_res') && (currentMode === 'DCR' || currentMode === 'R')) ||
+                   (prefix.includes('_ind') && currentMode === 'L') ||
+                   (prefix.includes('_cap') && currentMode === 'C') ||
+                   (prefix.includes('_imp') && currentMode === 'Z');
 
   return (
-    <div style={S.sectionBox}>
-      {/* Group Header with Title, Frequency Input, and Copy Button */}
+    <div
+      onClick={() => onSelectGroup && onSelectGroup(prefix)}
+      style={{
+        ...S.sectionBox,
+        border: isActive ? '1.5px solid #2563eb' : '1px solid #e2e8f0',
+        background: isActive ? '#f8fafc' : '#fff',
+        boxShadow: isActive ? '0 1px 3px rgba(37, 99, 235, 0.15)' : 'none',
+        cursor: 'pointer',
+        transition: 'all 0.2s ease-in-out',
+      }}
+    >
+      {/* Group Header with Title, Symbol Badge, Frequency Input */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: 4, marginBottom: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a' }}>{title}</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Freq:</span>
-          <input
-            type="text"
-            value={groupFreq}
-            onChange={(e) => handleFreqChange(groupFreqKey, e.target.value)}
-            style={{ width: 44, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 10, textAlign: 'center' }}
-            placeholder="Freq"
-          />
-          <button
-            onClick={() => handleCopyFreq(prefix, keys)}
-            title="Copy frequency to all phases below"
-            style={{
-              background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 4,
-              padding: '2px 5px', fontSize: 9, fontWeight: 700, color: '#1e40af', cursor: 'pointer'
-            }}
-          >
-            Copy
-          </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a' }}>{title}</span>
+          {symbol && (
+            <span style={{
+              fontSize: 10, fontWeight: 800,
+              color: isActive ? '#1e40af' : '#64748b',
+              background: isActive ? '#dbeafe' : '#f1f5f9',
+              border: `1px solid ${isActive ? '#93c5fd' : '#e2e8f0'}`,
+              borderRadius: 4,
+              padding: '1px 5px',
+              fontFamily: 'monospace',
+              letterSpacing: 0.5,
+              transition: 'all 0.2s',
+            }}>{symbol}</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
+          {/* DCR / R toggle — only for resistance groups */}
+          {onModeToggle && (
+            <div style={{ display: 'flex', borderRadius: 5, overflow: 'hidden', border: '1px solid #cbd5e1' }}>
+              {['DCR', 'R'].map(m => (
+                <button
+                  key={m}
+                  onClick={() => onModeToggle(m)}
+                  title={m === 'DCR' ? 'DC Resistance — 4-wire Kelvin method for low-resistance windings' : 'AC Resistance — measured at set frequency'}
+                  style={{
+                    padding: '2px 7px',
+                    fontSize: 9,
+                    fontWeight: 800,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: currentMode === m ? '#1e40af' : '#f1f5f9',
+                    color: currentMode === m ? '#fff' : '#64748b',
+                    transition: 'all 0.15s',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
+          {!isInd && !isImp && !onModeToggle && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Freq:</span>
+              <select
+                value={groupFreq || '1kHz'}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (onHeaderFreqChange) onHeaderFreqChange(groupFreqKey, v);
+                  else handleFreqChange(groupFreqKey, v);
+                }}
+                style={{
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 4,
+                  padding: '2px 4px',
+                  fontSize: 10,
+                  color: '#1e293b',
+                  background: '#fff',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="100Hz">100Hz</option>
+                <option value="120Hz">120Hz</option>
+                <option value="1kHz">1kHz</option>
+                <option value="10kHz">10kHz</option>
+                <option value="100kHz">100kHz</option>
+              </select>
+            </div>
+          )}
+          {isImp && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Freq:</span>
+              <select
+                value={groupFreq || '1kHz'}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (onHeaderFreqChange) onHeaderFreqChange(groupFreqKey, v);
+                  else handleFreqChange(groupFreqKey, v);
+                }}
+                style={{
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 4,
+                  padding: '2px 4px',
+                  fontSize: 10,
+                  color: '#1e293b',
+                  background: '#fff',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="100Hz">100Hz</option>
+                <option value="120Hz">120Hz</option>
+                <option value="1kHz">1kHz</option>
+                <option value="10kHz">10kHz</option>
+                <option value="100kHz">100kHz</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Columns Header for Inductance Sweep */}
+      {isInd && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
+          {L_FREQS.map(f => {
+            const isCurrentFreq = currentFreq === f && isActive;
+            return (
+              <span
+                key={f}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFreqTabClick && onFreqTabClick(f);
+                }}
+                style={{
+                  flex: 1,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: isCurrentFreq ? '#1e40af' : '#64748b',
+                  background: isCurrentFreq ? '#dbeafe' : '#f1f5f9',
+                  border: `1px solid ${isCurrentFreq ? '#3b82f6' : '#cbd5e1'}`,
+                  borderRadius: 4,
+                  padding: '2px 0',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                title={`Click to configure multimeter frequency to ${f}`}
+              >
+                {f}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Columns Header for AC Resistance Sweep (R mode) */}
+      {isResAcSweep && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
+          {R_FREQS.map(f => {
+            const isCurrentFreq = currentFreq === f && isActive;
+            return (
+              <span
+                key={f}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFreqTabClick && onFreqTabClick(f);
+                }}
+                style={{
+                  flex: 1,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: isCurrentFreq ? '#7c3aed' : '#64748b',
+                  background: isCurrentFreq ? '#ede9fe' : '#f1f5f9',
+                  border: `1px solid ${isCurrentFreq ? '#a78bfa' : '#cbd5e1'}`,
+                  borderRadius: 4,
+                  padding: '2px 0',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                title={`Click to configure multimeter frequency to ${f}`}
+              >
+                {f}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Columns Header for Impedance Z + Deg */}
+      {isImp && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 4, paddingRight: 26, paddingLeft: 82 }}>
+          <span style={{ flex: 1, fontSize: 8, fontWeight: 700, color: '#64748b', textAlign: 'center' }}>Impedance Z (Ω)</span>
+          <span style={{ flex: 1, fontSize: 8, fontWeight: 700, color: '#64748b', textAlign: 'center' }}>Degree (°)</span>
+        </div>
+      )}
 
       {/* Phase Rows */}
       {keys.map(k => {
         const fKey = `${prefix}_${k}`;
         const val = captured[fKey];
-        const phaseFreqKey = `${fKey}_freq`;
-        const phaseFreq = frequencies[phaseFreqKey] || '';
         
         let correctedVal = '';
         if (val !== undefined && val !== null) {
@@ -119,63 +322,226 @@ function MeasGroup({
         const isFocused = focusedField === fKey;
         const displayVal = isFocused 
           ? (editValues[fKey] ?? '') 
-          : (correctedVal !== undefined && correctedVal !== null ? String(correctedVal) : '');
+          : (isOverload(correctedVal, currentMode) ? 'O.L' : (correctedVal !== undefined && correctedVal !== null ? String(correctedVal) : ''));
+
+        const zVal = captured[`${fKey}_z`];
+        const degVal = captured[`${fKey}_deg`];
+
+        const isZFocused = focusedField === `${fKey}_z`;
+        const isDegFocused = focusedField === `${fKey}_deg`;
+
+        const displayZ = isZFocused 
+          ? (editValues[`${fKey}_z`] ?? '') 
+          : (isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined && zVal !== null ? String(zVal) : ''));
+
+        const displayDeg = isDegFocused 
+          ? (editValues[`${fKey}_deg`] ?? '') 
+          : (degVal !== undefined && degVal !== null ? String(degVal) : '');
 
         return (
-          <div key={k} style={{ ...S.row, gap: 4 }}>
+          <div key={k} style={{ ...S.row, gap: 4 }} onClick={e => e.stopPropagation()}>
             <span style={{ ...S.phaseLabel, width: 78 }}>Phase {k}</span>
             
-            <input
-              type="text"
-              value={displayVal}
-              onFocus={() => handleFocus(fKey, val)}
-              onChange={(e) => handleTextChange(fKey, e.target.value)}
-              onBlur={() => handleBlur(fKey)}
-              style={S.captureInput(val !== undefined)}
-              placeholder="—"
-              title="Type reading manually, or click live streaming indicator / setup to capture"
-            />
-            
-            <button
-              onClick={() => onCapture(fKey)}
-              title="Capture live reading"
-              style={{
-                background: '#eff6ff',
-                border: '1px solid #bfdbfe',
-                borderRadius: 4,
-                width: 22,
-                height: 20,
-                fontSize: 10,
-                cursor: 'pointer',
-                color: '#1e40af',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0
-              }}
-            >
-              ⚡
-            </button>
-            
-            <span style={{ ...S.unit, width: 22 }}>{unit}</span>
+            {isResAcSweep ? (
+              <>
+                {R_FREQS.map(f => {
+                  const sweepKey = `${fKey}_${f}`;
+                  const sweepVal = captured[sweepKey];
+                  const isFocusedField = focusedField === sweepKey;
 
-            <input
-              type="text"
-              value={phaseFreq}
-              onChange={(e) => handleFreqChange(phaseFreqKey, e.target.value)}
-              placeholder="Freq"
-              style={{
-                width: 44,
-                border: '1px solid #cbd5e1',
-                borderRadius: 4,
-                padding: '2px 4px',
-                fontSize: 10,
-                textAlign: 'center',
-                outline: 'none',
-                background: '#fff',
-                flexShrink: 0
-              }}
-            />
+                  const activeVal = sweepVal;
+                  const hasValue = activeVal !== undefined && activeVal !== null;
+                  const displaySweepVal = isFocusedField
+                    ? (editValues[sweepKey] ?? '')
+                    : (isOverload(activeVal, 'R') ? 'O.L' : (hasValue ? String(activeVal) : ''));
+                  const isCurrentSweep = sweepingField === fKey && activeSweepFreq === f;
+                  return (
+                    <input
+                      key={f}
+                      type="text"
+                      value={displaySweepVal}
+                      onFocus={() => handleFocus(sweepKey, activeVal)}
+                      onChange={(e) => handleTextChange(sweepKey, e.target.value)}
+                      onBlur={() => handleBlur(sweepKey)}
+                      style={{
+                        ...S.captureInput(hasValue),
+                        borderColor: isCurrentSweep ? '#a78bfa' : undefined,
+                        boxShadow: isCurrentSweep ? '0 0 0 2px #ede9fe' : undefined,
+                        outline: 'none',
+                        textAlign: 'center',
+                        fontSize: 9,
+                        padding: '2px 2px',
+                      }}
+                      placeholder="—"
+                      title={`AC Resistance at ${f}`}
+                    />
+                  );
+                })}
+                <button
+                  onClick={() => onSweep && onSweep(fKey, 'R')}
+                  disabled={sweepingField !== null}
+                  title="Sweep all frequencies (AC R mode) and capture values"
+                  style={{
+                    background: sweepingField === fKey ? '#f5f3ff' : '#f5f3ff',
+                    border: `1px solid ${sweepingField === fKey ? '#a78bfa' : '#c4b5fd'}`,
+                    borderRadius: 4,
+                    width: 22,
+                    height: 20,
+                    fontSize: 10,
+                    cursor: sweepingField !== null ? 'not-allowed' : 'pointer',
+                    color: '#7c3aed',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  {sweepingField === fKey ? '⏳' : '⚡'}
+                </button>
+              </>
+            ) : isInd ? (
+              <>
+                {L_FREQS.map(f => {
+                  const sweepKey = `${fKey}_${f}`;
+                  const sweepVal = captured[sweepKey];
+                  const isFocusedField = focusedField === sweepKey;
+
+                  const activeVal = sweepVal;
+                  const hasValue = activeVal !== undefined && activeVal !== null;
+                  const displaySweepVal = isFocusedField
+                    ? (editValues[sweepKey] ?? '')
+                    : (isOverload(activeVal, 'L') ? 'O.L' : (hasValue ? String(activeVal) : ''));
+                  
+                  const isCurrentSweep = sweepingField === fKey && activeSweepFreq === f;
+
+                  return (
+                    <input
+                      key={f}
+                      type="text"
+                      value={displaySweepVal}
+                      onFocus={() => handleFocus(sweepKey, activeVal)}
+                      onChange={(e) => handleTextChange(sweepKey, e.target.value)}
+                      onBlur={() => handleBlur(sweepKey)}
+                      style={{
+                        ...S.captureInput(hasValue),
+                        borderColor: isCurrentSweep ? '#eab308' : undefined,
+                        boxShadow: isCurrentSweep ? '0 0 0 2px #fef08a' : undefined,
+                        outline: 'none',
+                        textAlign: 'center',
+                        fontSize: 9,
+                        padding: '2px 2px'
+                      }}
+                      placeholder="—"
+                      title={`Inductance at ${f}`}
+                    />
+                  );
+                })}
+                
+                <button
+                  onClick={() => onSweep && onSweep(fKey, 'L')}
+                  disabled={sweepingField !== null}
+                  title="Sweep all frequencies and capture values"
+                  style={{
+                    background: sweepingField === fKey ? '#fefce8' : '#eff6ff',
+                    border: `1px solid ${sweepingField === fKey ? '#eab308' : '#bfdbfe'}`,
+                    borderRadius: 4,
+                    width: 22,
+                    height: 20,
+                    fontSize: 10,
+                    cursor: sweepingField !== null ? 'not-allowed' : 'pointer',
+                    color: '#1e40af',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                >
+                  {sweepingField === fKey ? '⏳' : '⚡'}
+                </button>
+              </>
+            ) : isImp ? (
+              <>
+                <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+                  <input
+                    type="text"
+                    value={displayZ}
+                    onFocus={() => handleFocus(`${fKey}_z`, zVal)}
+                    onChange={(e) => handleTextChange(`${fKey}_z`, e.target.value)}
+                    onBlur={() => handleBlur(`${fKey}_z`)}
+                    style={S.captureInput(zVal !== undefined)}
+                    placeholder="Z (Ω)"
+                    title="Enter manual reading for Impedance (Z)"
+                  />
+                  <input
+                    type="text"
+                    value={displayDeg}
+                    onFocus={() => handleFocus(`${fKey}_deg`, degVal)}
+                    onChange={(e) => handleTextChange(`${fKey}_deg`, e.target.value)}
+                    onBlur={() => handleBlur(`${fKey}_deg`)}
+                    style={S.captureInput(degVal !== undefined)}
+                    placeholder="Degree (°)"
+                    title="Enter manual reading for Phase Degree"
+                  />
+                </div>
+                
+                <button
+                  onClick={() => onCapture(fKey)}
+                  title="Capture live Z + Degree reading"
+                  style={{
+                    background: '#eff6ff',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: 4,
+                    width: 22,
+                    height: 20,
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    color: '#1e40af',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                >
+                  ⚡
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={displayVal}
+                  onFocus={() => handleFocus(fKey, val)}
+                  onChange={(e) => handleTextChange(fKey, e.target.value)}
+                  onBlur={() => handleBlur(fKey)}
+                  style={S.captureInput(val !== undefined)}
+                  placeholder="—"
+                  title="Type reading manually, or click live streaming indicator / setup to capture"
+                />
+                
+                <button
+                  onClick={() => onCapture(fKey)}
+                  title="Capture live reading"
+                  style={{
+                    background: '#eff6ff',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: 4,
+                    width: 22,
+                    height: 20,
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    color: '#1e40af',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                >
+                  ⚡
+                </button>
+                
+                <span style={{ ...S.unit, width: 22 }}>{unit}</span>
+              </>
+            )}
           </div>
         );
       })}
@@ -191,7 +557,7 @@ function RLCSetupModal({ mode, freq, secondary, equivalent, liveValue, liveSecon
   const [localEquivalent, setLocalEquivalent] = useState(equivalent || 'SER');
   const [localRange,     setLocalRange]     = useState('Auto');
 
-  const unit = localMode === 'R' ? 'Ohm' : localMode === 'L' ? 'mH' : 'nF';
+  const unit = (localMode === 'R' || localMode === 'DCR') ? 'Ω' : localMode === 'L' ? 'mH' : localMode === 'Z' ? 'Ω' : 'nF';
 
   const selectStyle = {
     border: '1px solid #cbd5e1', borderRadius: 4, padding: '4px 6px',
@@ -222,19 +588,22 @@ function RLCSetupModal({ mode, freq, secondary, equivalent, liveValue, liveSecon
           {/* L/C/R and Q/D/R row */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>L / C / R (Primary)</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>L / C / R / Z / DCR (Primary)</label>
               <select value={localMode} onChange={e => setLocalMode(e.target.value)} style={selectStyle}>
-                <option value="L">L (Inductance)</option>
-                <option value="C">C (Capacitance)</option>
-                <option value="R">R (Resistance)</option>
+                <option value="L">L — Inductance (H)</option>
+                <option value="C">C — Capacitance (F)</option>
+                <option value="R">R — Resistance (Ω)</option>
+                <option value="DCR">DCR — DC Resistance (Ω)</option>
+                <option value="Z">Z — Impedance (Ω∠°)</option>
               </select>
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>Q / D / R (Secondary)</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>Q / D / R / THETA (Secondary)</label>
               <select value={localSecondary} onChange={e => setLocalSecondary(e.target.value)} style={selectStyle}>
                 <option value="Q">Q (Quality Factor)</option>
                 <option value="D">D (Dissipation)</option>
                 <option value="R">R (ESR)</option>
+                <option value="THETA">THETA (Phase Angle)</option>
               </select>
             </div>
           </div>
@@ -325,11 +694,11 @@ function RLCSetupModal({ mode, freq, secondary, equivalent, liveValue, liveSecon
 }
 
 // ── Main component ────────────────────────────────────────
-export default function MultimeterTab({ record, demoMode = true, multimeterStatus, onChange }) {
+export default function MultimeterTab({ record, demoMode = true, multimeterStatus, onChange, onCaptureChange, visible = true }) {
   const correctWindingTo20 = record?.correctWindingTo20 || false;
-  const [mode,      setMode]      = useState('R');
+  const [mode,      setMode]      = useState('DCR');
   const [freq,      setFreq]      = useState('120Hz');
-  const [secondary, setSecondary] = useState('D');
+  const [secondary, setSecondary] = useState('THETA');
   const [equivalent, setEquivalent] = useState('SER');
   const [liveValue, setLiveValue] = useState(0);
   const [liveSecondaryValue, setLiveSecondaryValue] = useState(0);
@@ -337,6 +706,126 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const [frequencies, setFrequencies] = useState({});
   const [temperature, setTemperature] = useState('25');
   const [showSetup, setShowSetup] = useState(false);
+  const [expandedPanel, setExpandedPanel] = useState('stator');
+  const [sweepingField, setSweepingField] = useState(null);
+  const [activeSweepFreq, setActiveSweepFreq] = useState(null);
+  const [sweepErrors, setSweepErrors] = useState([]);
+
+  const getPanelStyle = (panelName) => {
+    const isCollapsed = expandedPanel !== 'both' && expandedPanel !== panelName;
+    return {
+      ...S.windingPanel,
+      flex: isCollapsed ? 'none' : 1,
+      width: isCollapsed ? 45 : undefined,
+      padding: isCollapsed ? '10px 4px' : 10,
+      cursor: isCollapsed ? 'pointer' : undefined,
+      overflow: 'hidden',
+      transition: 'all 0.3s ease-in-out',
+    };
+  };
+
+  const handlePanelHeaderClick = (panelName) => {
+    if (expandedPanel === panelName) {
+      setExpandedPanel('both');
+    } else {
+      setExpandedPanel(panelName);
+    }
+  };
+
+  // sweepMode: 'L' for inductance sweep, 'R' for AC resistance sweep
+  const handleSweep = async (fKey, sweepMode = 'L') => {
+    if (!confirmReTest()) return;
+    setSweepingField(fKey);
+    setSweepErrors([]);
+
+    const freqs = sweepMode === 'R'
+      ? ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']
+      : ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const originalFreq = freq;
+    const originalMode = mode;
+
+    for (const f of freqs) {
+      setActiveSweepFreq(f);
+      const phaseSweepKey = `${fKey}_${f}`;
+
+      if (demoMode) {
+        // In Demo Mode: wait 300ms, then capture simulated value
+        await new Promise(resolve => setTimeout(resolve, 300));
+        let simVal;
+        if (sweepMode === 'R') {
+          // AC resistance rises with frequency due to skin effect
+          const base = f === '100Hz' ? 12.41 : f === '120Hz' ? 12.43 : f === '1kHz' ? 12.48 : f === '10kHz' ? 12.89 : 14.21;
+          const noise = (Math.random() - 0.5) * base * 0.01;
+          simVal = parseFloat((base + noise).toFixed(4));
+        } else {
+          const base = f === '100Hz' ? 145.2 : f === '120Hz' ? 144.8 : f === '1kHz' ? 142.1 : f === '10kHz' ? 138.5 : 132.0;
+          const noise = (Math.random() - 0.5) * base * 0.02;
+          simVal = parseFloat((base + noise).toFixed(3));
+        }
+
+        setCaptured(prev => ({ ...prev, [phaseSweepKey]: simVal }));
+        if (record) {
+          await api.saveMultimeterField(record.id, phaseSweepKey, {
+            value: simVal,
+            temperature: parseFloat(temperature) || 0
+          });
+        }
+      } else {
+        // In Real Device Mode — robust 3-step capture:
+        try {
+          // ── Step 1: Send mode + frequency command to the LCR meter ──
+          const sweepSecondary = secondary;
+          await api.sendMultimeterCommand(sweepMode, f, sweepSecondary, equivalent);
+        } catch (err) {
+          console.error(`[Sweep] Failed to send command for ${f}:`, err);
+          setSweepErrors(prev => [...prev, `⚠️ Failed to send command at ${f}: ${err.message || err}`]);
+          continue;
+        }
+
+        try {
+          // ── Step 2: Wait 1500ms for LCR analog circuit to fully settle ──
+          await new Promise(resolve => setTimeout(resolve, 1500));
+
+          // ── Step 3: Wait for the NEXT fresh IPC packet after settling ──
+          const countAfterSettle = packetCountRef.current;
+          const packetTimeout = Date.now() + 3000;
+          while (packetCountRef.current <= countAfterSettle) {
+            if (Date.now() > packetTimeout) {
+              setSweepErrors(prev => [...prev, `⚠️ No fresh reading received at ${f} — skipped`]);
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+
+          const val = liveValueRef.current;
+          setCaptured(prev => ({ ...prev, [phaseSweepKey]: val }));
+          if (record) {
+            await api.saveMultimeterField(record.id, phaseSweepKey, {
+              value: val,
+              temperature: parseFloat(temperature) || 0
+            });
+          }
+        } catch (err) {
+          console.error(`[Sweep] Error capturing value at ${f}:`, err);
+          setSweepErrors(prev => [...prev, `⚠️ Capture error at ${f}: ${err.message || err}`]);
+        }
+      }
+    }
+
+    // Cleanup/restore original mode + frequency
+    setActiveSweepFreq(null);
+    setSweepingField(null);
+
+    if (!demoMode && api.sendMultimeterCommand) {
+      try {
+        const restoreSecondary = secondary;
+        await api.sendMultimeterCommand(originalMode, originalFreq, restoreSecondary, equivalent);
+      } catch (err) {
+        console.error('[Sweep] Failed to restore original mode/frequency:', err);
+        setSweepErrors(prev => [...prev, `⚠️ Failed to restore to ${originalMode}/${originalFreq}: ${err.message || err}`]);
+      }
+    }
+  };
 
   // Focus & manual edit values
   const [focusedField, setFocusedField] = useState(null);
@@ -348,6 +837,9 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const liveRef = useRef(null);
   const watchdogIntervalRef = useRef(null);
   const lastValueTime = useRef(Date.now());
+  // Mutable refs for sweep: avoids React closure stale-value bug
+  const liveValueRef = useRef(0);
+  const packetCountRef = useRef(0);
 
   const multimeterOnline = multimeterStatus === 'connected';
 
@@ -364,7 +856,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     api.getMultimeterData(record.id).then(data => {
       const vals = {};
       const freqs = {};
-      let tempVal = '25';
+      let tempVal = record?.temperature || '25';
       Object.entries(data || {}).forEach(([field, d]) => {
         if (d.value !== undefined && d.value !== null) {
           vals[field] = d.value;
@@ -382,7 +874,11 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         hadDataOnLoad.current = true;
       }
     });
-  }, [record?.id]);
+  // NOTE: Only re-run when the record ID changes (different record opened).
+  // Do NOT include record?.temperature here — temperature is loaded from the
+  // stored DB data inside the effect. Including it would reload all captured
+  // state every time the user edits the temperature field in InfoTab.
+  }, [record?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watchdog & live feed simulation
   useEffect(() => {
@@ -394,7 +890,10 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       const base = mode === 'R' ? 12.4 : mode === 'L' ? 145.2 : 47.8;
       liveRef.current = setInterval(() => {
         const noise = (Math.random() - 0.5) * base * 0.05;
-        setLiveValue(parseFloat((base + noise).toFixed(3)));
+        const val = parseFloat((base + noise).toFixed(3));
+        setLiveValue(val);
+        liveValueRef.current = val;  // keep mutable ref in sync
+        packetCountRef.current += 1;
         setLiveSecondaryValue(parseFloat((Math.random() * 0.1).toFixed(4)));
       }, 400);
     } else {
@@ -411,6 +910,8 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           setTelemetryAlert(false);
           setLiveValue(v.primary);
           setLiveSecondaryValue(v.secondary);
+          liveValueRef.current = v.primary;  // keep mutable ref in sync
+          packetCountRef.current += 1;        // increment on every new IPC packet
         });
       }
     }
@@ -442,15 +943,60 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
   const handleCapture = async (fieldKey) => {
     if (!confirmReTest()) return;
-    const val = liveValue;
-    setCaptured(prev => ({ ...prev, [fieldKey]: val }));
-    if (record) {
-      await api.saveMultimeterField(record.id, fieldKey, {
-        value: val,
-        temperature: parseFloat(temperature) || 0
-      });
+
+    // ── Auto-switch mode to match the field being captured ──────────────────
+    let requiredMode = null;
+    if (fieldKey.includes('_res_')) {
+      // Keep whichever resistance mode (DCR or R) is already active; default to DCR
+      requiredMode = (mode === 'R') ? 'R' : 'DCR';
+    } else if (fieldKey.includes('_ind_')) {
+      requiredMode = 'L';
+    } else if (fieldKey.includes('_cap_')) {
+      requiredMode = 'C';
+    } else if (fieldKey.includes('_imp_')) {
+      requiredMode = 'Z';
+    }
+
+    if (requiredMode && requiredMode !== mode) {
+      setMode(requiredMode);
+      if (!demoMode && api.sendMultimeterCommand) {
+        try {
+          await api.sendMultimeterCommand(requiredMode, freq, secondary, equivalent);
+        } catch (err) {
+          console.error('Failed to auto-switch mode before capture:', err);
+        }
+      }
+      // Wait for the device to stream a fresh reading in the new mode
+      await new Promise(res => setTimeout(res, 600));
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    if (fieldKey.includes('_imp')) {
+      const zVal = liveValueRef.current;
+      const degVal = liveSecondaryValue;
+      setCaptured(prev => ({ ...prev, [`${fieldKey}_z`]: zVal, [`${fieldKey}_deg`]: degVal }));
+      if (record) {
+        await api.saveMultimeterField(record.id, `${fieldKey}_z`, {
+          value: zVal,
+          temperature: parseFloat(temperature) || 0
+        });
+        await api.saveMultimeterField(record.id, `${fieldKey}_deg`, {
+          value: degVal,
+          temperature: parseFloat(temperature) || 0
+        });
+      }
+    } else {
+      const val = liveValueRef.current;
+      setCaptured(prev => ({ ...prev, [fieldKey]: val }));
+      if (record) {
+        await api.saveMultimeterField(record.id, fieldKey, {
+          value: val,
+          temperature: parseFloat(temperature) || 0
+        });
+      }
     }
   };
+
 
   const handleSetupSave = async ({ mode: m, freq: f, secondary: s, equivalent: eq }) => {
     setMode(m);
@@ -468,9 +1014,33 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   };
 
   // Focus & manual edit handlers
-  const handleFocus = (fieldKey, currentVal) => {
+  const handleFocus = async (fieldKey, currentVal) => {
     setFocusedField(fieldKey);
     setEditValues(prev => ({ ...prev, [fieldKey]: currentVal !== undefined && currentVal !== null ? String(currentVal) : '' }));
+
+    let newMode = null;
+    let newSecondary = secondary;
+
+    if (fieldKey.includes('_res_')) {
+      newMode = (mode === 'R') ? 'R' : 'DCR';
+    } else if (fieldKey.includes('_ind_')) {
+      newMode = 'L';
+    } else if (fieldKey.includes('_cap_')) {
+      newMode = 'C';
+    } else if (fieldKey.includes('_imp_')) {
+      newMode = 'Z';
+    }
+
+    if (newMode && newMode !== mode) {
+      setMode(newMode);
+      if (sweepingField === null && !demoMode && api.sendMultimeterCommand) {
+        try {
+          await api.sendMultimeterCommand(newMode, freq, secondary, equivalent);
+        } catch (err) {
+          console.error('Failed to auto-configure multimeter mode on focus:', err);
+        }
+      }
+    }
   };
 
   const handleTextChange = (fieldKey, text) => {
@@ -549,6 +1119,76 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     setFrequencies(updatedFreqs);
   };
 
+  const handleSelectGroup = async (prefix) => {
+    let newMode = mode;
+
+    if (prefix.includes('_res')) {
+      newMode = (mode === 'R') ? 'R' : 'DCR';
+    } else if (prefix.includes('_ind')) {
+      newMode = 'L';
+    } else if (prefix.includes('_cap')) {
+      newMode = 'C';
+    } else if (prefix.includes('_imp')) {
+      newMode = 'Z';
+    }
+
+    if (newMode !== mode) {
+      setMode(newMode);
+      if (sweepingField === null && !demoMode && api.sendMultimeterCommand) {
+        try {
+          await api.sendMultimeterCommand(newMode, freq, secondary, equivalent);
+        } catch (err) {
+          console.error('Failed to configure multimeter mode on group click:', err);
+        }
+      }
+    }
+  };
+
+  const handleResistanceModeToggle = async (m) => {
+    setMode(m);
+    if (!demoMode && api.sendMultimeterCommand) {
+      try {
+        await api.sendMultimeterCommand(m, freq, secondary, equivalent);
+      } catch (err) {
+        console.error('Failed to toggle resistance mode:', err);
+      }
+    }
+  };
+
+  const handleFreqTabClick = async (f) => {
+    // Preserve current mode — only switch to 'L' if we're not already in a sweep mode
+    const newMode = (mode === 'R' || mode === 'L') ? mode : 'L';
+    setFreq(f);
+    setMode(newMode);
+    if (!demoMode && api.sendMultimeterCommand) {
+      try {
+        await api.sendMultimeterCommand(newMode, f, secondary, equivalent);
+      } catch (err) {
+        console.error('Failed to configure multimeter frequency on tab click:', err);
+      }
+    }
+  };
+
+  // Updates global freq + sends multimeter command (keeps current mode) when
+  // the group-header frequency dropdown is changed for C / R / Z groups.
+  const handleHeaderFreqChange = async (groupFreqKey, freqVal) => {
+    // Save per-group frequency for record-keeping
+    setFrequencies(prev => ({ ...prev, [groupFreqKey]: freqVal }));
+    if (record) {
+      await api.saveMultimeterField(record.id, groupFreqKey, { frequency: freqVal });
+    }
+    // Update the global freq and push to the device
+    setFreq(freqVal);
+    if (!demoMode && api.sendMultimeterCommand) {
+      try {
+        await api.sendMultimeterCommand(mode, freqVal, secondary, equivalent);
+      } catch (err) {
+        console.error('Failed to update multimeter frequency from group header:', err);
+      }
+    }
+  };
+
+
   // --- Imbalance & Diagnostic Analytics (IEEE and Standard Industrial limits) ---
   function calculateImbalance(v1, v2, v3) {
     if (v1 === undefined || v2 === undefined || v3 === undefined) return null;
@@ -573,34 +1213,46 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const rotorResImb = calculateImbalance(captured['rotor_res_1-2'], captured['rotor_res_1-3'], captured['rotor_res_2-3']);
   const rotorIndImb = calculateImbalance(captured['rotor_ind_1-2'], captured['rotor_ind_1-3'], captured['rotor_ind_2-3']);
 
-  function renderImbalanceBadge(imb) {
-    if (imb === null) return <span style={{ color: '#94a3b8', fontSize: 10, fontWeight: 600 }}>Awaiting 3-phase inputs</span>;
-    
-    let color = '#10b981'; // pass
-    let label = 'Pass (Balanced)';
-    if (imb > 5) {
-      color = '#dc2626'; // fail
-      label = 'Fail (High Imbalance)';
-    } else if (imb > 2) {
-      color = '#d97706'; // warning
-      label = 'Warning (Moderate Imbalance)';
-    }
+  function renderImbalanceChip(imb, label) {
+    const isPending = imb === null;
+    const pct = isPending ? 0 : Math.min(imb, 100);
+    const color = isPending ? '#94a3b8' : imb > 5 ? '#dc2626' : imb > 2 ? '#d97706' : '#10b981';
+    const statusText = isPending ? '—' : imb > 5 ? 'HIGH' : imb > 2 ? 'WARN' : 'OK';
+    const bgColor = isPending ? '#f8fafc' : imb > 5 ? '#fef2f2' : imb > 2 ? '#fffbeb' : '#f0fdf4';
+    const borderColor = isPending ? '#e2e8f0' : imb > 5 ? '#fecaca' : imb > 2 ? '#fde68a' : '#bbf7d0';
 
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 800, color: '#0f172a', fontFamily: 'monospace' }}>{imb.toFixed(2)}%</span>
-        <span style={{
-          fontSize: 8, fontWeight: 800, color: '#fff',
-          background: color, borderRadius: 5, padding: '2px 6px',
-        }}>
-          {label}
-        </span>
+      <div style={{
+        background: bgColor, border: `1px solid ${borderColor}`,
+        borderRadius: 7, padding: '4px 8px',
+        display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+          <span style={{ fontSize: 8.5, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{label}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: isPending ? '#cbd5e1' : color, fontFamily: 'monospace' }}>
+              {isPending ? '—' : `${imb.toFixed(2)}%`}
+            </span>
+            <span style={{
+              fontSize: 7, fontWeight: 800, color: '#fff',
+              background: color, borderRadius: 3, padding: '1px 3px',
+              lineHeight: 1,
+            }}>{statusText}</span>
+          </div>
+        </div>
+        <div style={{ height: 3, background: '#e2e8f0', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2, transition: 'width 0.4s ease' }} />
+        </div>
       </div>
     );
   }
 
   const tempNum = Math.min(Math.max(parseFloat(temperature) || 0, 0), 100);
-  const unit = mode === 'R' ? 'Ω' : mode === 'L' ? 'mH' : 'nF';
+  const unit = (mode === 'R' || mode === 'DCR' || mode === 'Z') ? 'Ω' : mode === 'L' ? 'mH' : 'nF';
+
+  if (!visible) {
+    return <div style={{ display: 'none' }} />;
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 112px)', boxSizing: 'border-box', padding: 12, gap: 10 }}>
@@ -625,8 +1277,8 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* Active settings pills */}
           {[
-            ['Mode', mode === 'R' ? 'Resistance' : mode === 'L' ? 'Inductance' : 'Capacitance'],
-            ['Freq', freq],
+            ['Mode', sweepingField ? (sweepingField.includes('_res') ? 'Resistance (R)' : 'Inductance (L)') : (mode === 'DCR' ? 'DCR' : mode === 'R' ? 'Resistance (R)' : mode === 'L' ? 'Inductance (L)' : mode === 'C' ? 'Capacitance (C)' : mode === 'Z' ? 'Impedance (Z)' : 'Capacitance')],
+            ['Freq', sweepingField ? activeSweepFreq : (mode === 'DCR' ? '—' : freq)],
             ['Sec', secondary],
           ].map(([lbl, val]) => (
             <div key={lbl} style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>
@@ -680,254 +1332,457 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       <div style={{ display: 'flex', gap: 10, flex: 1, minHeight: 0 }}>
 
         {/* STATOR WINDING */}
-        <div style={S.windingPanel}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span>🔵 Stator Winding</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
-              <input
-                type="text"
-                value={frequencies['stator_global_freq'] || ''}
-                onChange={e => handleFreqChange('stator_global_freq', e.target.value)}
-                style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
-                placeholder="e.g. 1kHz"
-              />
+        <div
+          style={getPanelStyle('stator')}
+          onClick={() => {
+            if (expandedPanel === 'rotor') setExpandedPanel('both');
+          }}
+        >
+          {expandedPanel === 'rotor' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, height: '100%', justifyContent: 'center', userSelect: 'none' }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', writingMode: 'vertical-lr', textOrientation: 'mixed', whiteSpace: 'nowrap' }}>
+                🔵 Stator Winding
+              </span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>▶</span>
             </div>
-          </div>
-
-          {/* Stator grid: Resistance+Inductance left, Capacitance right */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup
-                title="Winding Resistance"
-                keys={RES_KEYS}
-                prefix="stator_res"
-                unit="ohm"
-                captured={captured}
-                frequencies={frequencies}
-                onCapture={handleCapture}
-                correctWindingTo20={correctWindingTo20}
-                temp={temperature}
-                focusedField={focusedField}
-                editValues={editValues}
-                handleFocus={handleFocus}
-                handleTextChange={handleTextChange}
-                handleBlur={handleBlur}
-                handleFreqChange={handleFreqChange}
-                handleCopyFreq={handleCopyFreq}
-              />
-              <MeasGroup
-                title="Winding Inductance"
-                keys={IND_KEYS}
-                prefix="stator_ind"
-                unit="mH"
-                captured={captured}
-                frequencies={frequencies}
-                onCapture={handleCapture}
-                focusedField={focusedField}
-                editValues={editValues}
-                handleFocus={handleFocus}
-                handleTextChange={handleTextChange}
-                handleBlur={handleBlur}
-                handleFreqChange={handleFreqChange}
-                handleCopyFreq={handleCopyFreq}
-              />
-            </div>
-            <MeasGroup
-              title="Winding Capacitance"
-              keys={CAP_KEYS}
-              prefix="stator_cap"
-              unit="nF"
-              captured={captured}
-              frequencies={frequencies}
-              onCapture={handleCapture}
-              focusedField={focusedField}
-              editValues={editValues}
-              handleFocus={handleFocus}
-              handleTextChange={handleTextChange}
-              handleBlur={handleBlur}
-              handleFreqChange={handleFreqChange}
-              handleCopyFreq={handleCopyFreq}
-            />
-          </div>
-
-          {/* Analysis box */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', display: 'block', borderBottom: '1px solid #f1f5f9', paddingBottom: 3 }}>📊 PHASE BALANCE ANALYSIS</span>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Resistance Imbalance:</span>
-              {renderImbalanceBadge(statorResImb)}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Inductance Imbalance:</span>
-              {renderImbalanceBadge(statorIndImb)}
-            </div>
-          </div>
-
-          {/* Temperature row */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
-            {/* Thermometer */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 4 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 80, fontSize: 8, color: '#94a3b8', textAlign: 'right', paddingBottom: 2 }}>
-                  <span>100</span><span>80</span><span>60</span><span>40</span><span>20</span><span>0</span>
-                </div>
-                <div style={{ position: 'relative', width: 12, height: 80 }}>
-                  <div style={{ position: 'absolute', inset: 0, background: '#e2e8f0', borderRadius: '6px 6px 0 0', border: '1px solid #cbd5e1', overflow: 'hidden' }}>
-                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: `${tempNum}%`, background: `hsl(${120 - tempNum * 1.2}, 80%, 45%)`, transition: 'height 0.4s ease' }}></div>
-                  </div>
+          ) : (
+            <>
+              <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePanelHeaderClick('stator');
+                  }} 
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none' }}
+                  title="Click to expand stator / collapse rotor tests"
+                >
+                  <span>🔵 Stator Winding</span>
+                  <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
+                    {expandedPanel === 'stator' ? ' ◀ (Show Both)' : ' ◀▶ (Expand)'}
+                  </span>
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
+                  <input
+                    type="text"
+                    value={frequencies['stator_global_freq'] || ''}
+                    onChange={e => handleFreqChange('stator_global_freq', e.target.value)}
+                    style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
+                    placeholder="e.g. 1kHz"
+                  />
                 </div>
               </div>
-              <div style={{ width: 18, height: 18, background: '#ef4444', borderRadius: '50%', marginTop: -4, border: '2px solid #cbd5e1', zIndex: 1 }}></div>
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>TEMPERATURE (°C)</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  value={temperature}
-                  onChange={e => {
-                    const v = e.target.value;
-                    setTemperature(v);
-                    if (record) {
-                      const tempNum = parseFloat(v) || 0;
-                      Object.keys(captured).forEach(f => {
-                        api.saveMultimeterField(record.id, f, { temperature: tempNum });
-                      });
-                    }
-                  }}
-                  style={{ width: 65, border: '1px solid #cbd5e1', borderRadius: 6, padding: '5px 8px', fontSize: 13, outline: 'none', fontWeight: 700 }}
-                  min="0" max="200"
-                />
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>°C</span>
+
+              {/* Stator grid: Resistance+Inductance left, Capacitance+Impedance right */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <MeasGroup
+                    title="Winding Resistance"
+                    symbol="R"
+                    keys={RES_KEYS}
+                    prefix="stator_res"
+                    unit="Ω"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    correctWindingTo20={correctWindingTo20}
+                    temp={temperature}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    onModeToggle={handleResistanceModeToggle}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                  <MeasGroup
+                    title="Winding Inductance"
+                    symbol="L"
+                    keys={IND_KEYS}
+                    prefix="stator_ind"
+                    unit="mH"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <MeasGroup
+                    title="Winding Capacitance"
+                    symbol="C"
+                    keys={CAP_KEYS}
+                    prefix="stator_cap"
+                    unit="nF"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                  <MeasGroup
+                    title="Winding Impedance"
+                    symbol="Z"
+                    keys={IMP_KEYS}
+                    prefix="stator_imp"
+                    unit="Ω"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                </div>
               </div>
+
+            </>
+          )}
+        </div>
+
+        {/* ROTOR WINDING */}
+        <div
+          style={getPanelStyle('rotor')}
+          onClick={() => {
+            if (expandedPanel === 'stator') setExpandedPanel('both');
+          }}
+        >
+          {expandedPanel === 'stator' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, height: '100%', justifyContent: 'center', userSelect: 'none' }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', writingMode: 'vertical-lr', textOrientation: 'mixed', whiteSpace: 'nowrap' }}>
+                🔴 Rotor Winding
+              </span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>◀</span>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePanelHeaderClick('rotor');
+                  }} 
+                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none' }}
+                  title="Click to expand rotor / collapse stator tests"
+                >
+                  <span>🔴 Rotor Winding</span>
+                  <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
+                    {expandedPanel === 'rotor' ? ' ◀ (Show Both)' : ' ◀▶ (Expand)'}
+                  </span>
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
+                  <input
+                    type="text"
+                    value={frequencies['rotor_global_freq'] || ''}
+                    onChange={e => handleFreqChange('rotor_global_freq', e.target.value)}
+                    style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
+                    placeholder="e.g. 1kHz"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <MeasGroup
+                    title="Winding Resistance"
+                    symbol="R"
+                    keys={RES_KEYS}
+                    prefix="rotor_res"
+                    unit="Ω"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    correctWindingTo20={correctWindingTo20}
+                    temp={temperature}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    onModeToggle={handleResistanceModeToggle}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                  <MeasGroup
+                    title="Winding Inductance"
+                    symbol="L"
+                    keys={IND_KEYS}
+                    prefix="rotor_ind"
+                    unit="mH"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <MeasGroup
+                    title="Winding Capacitance"
+                    symbol="C"
+                    keys={CAP_KEYS}
+                    prefix="rotor_cap"
+                    unit="nF"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                  <MeasGroup
+                    title="Winding Impedance"
+                    symbol="Z"
+                    keys={IMP_KEYS}
+                    prefix="rotor_imp"
+                    unit="Ω"
+                    captured={captured}
+                    frequencies={frequencies}
+                    onCapture={handleCapture}
+                    focusedField={focusedField}
+                    editValues={editValues}
+                    handleFocus={handleFocus}
+                    handleTextChange={handleTextChange}
+                    handleBlur={handleBlur}
+                    handleFreqChange={handleFreqChange}
+                    handleCopyFreq={handleCopyFreq}
+                    onSweep={handleSweep}
+                    sweepingField={sweepingField}
+                    activeSweepFreq={activeSweepFreq}
+                    onSelectGroup={handleSelectGroup}
+                    onFreqTabClick={handleFreqTabClick}
+                    onHeaderFreqChange={handleHeaderFreqChange}
+                    currentMode={mode}
+                    currentFreq={freq}
+                  />
+                </div>
+              </div>
+
+            </>
+          )}
+        </div>
+
+      </div>
+
+      {/* ── SWEEP ERROR BANNERS ── */}
+      {sweepErrors.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+          {sweepErrors.map((msg, i) => (
+            <div key={i} style={{
+              background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8,
+              padding: '6px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 8, fontSize: 11, color: '#9a3412', fontWeight: 600,
+            }}>
+              <span>{msg}</span>
+              <button
+                onClick={() => setSweepErrors(prev => prev.filter((_, j) => j !== i))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#c2410c', fontSize: 14, lineHeight: 1, padding: '0 2px' }}
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── ALWAYS-VISIBLE BOTTOM ROW: Live Readout | Temperature | Phase Balance ── */}
+      <div style={{
+        display: 'flex', gap: 10, flexShrink: 0, alignItems: 'stretch',
+      }}>
+
+        {/* Live Readout */}
+        <div style={{ background: '#0f172a', borderRadius: 10, padding: '10px 20px', display: 'flex', gap: 36, alignItems: 'center', flex: '0 0 auto', minWidth: 520 }}>
+          <div>
+            <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Primary ({mode})</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{ fontSize: 26, fontWeight: 700, fontFamily: 'monospace', color: '#10b981', letterSpacing: -1 }}>
+                {isOverload(liveValue, mode) ? 'O.L' : 
+                  ((correctWindingTo20 && (mode === 'R' || mode === 'DCR'))
+                    ? parseFloat((liveValue * (254.5 / (234.5 + (isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature))))).toFixed(3))
+                    : liveValue
+                  ).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+                }
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#4ade80' }}>{unit}</span>
+            </div>
+          </div>
+          <div>
+            <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Secondary ({secondary})</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{ fontSize: 26, fontWeight: 700, fontFamily: 'monospace', color: '#38bdf8', letterSpacing: -1 }}>
+                {liveSecondaryValue.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, borderLeft: '1px solid #1e293b', paddingLeft: 16, marginLeft: 'auto' }}>
+            {[
+              ['Mode', sweepingField ? (sweepingField.includes('_res') ? 'R' : 'L') : (mode === 'DCR' ? 'DCR' : mode === 'R' ? 'R' : mode === 'L' ? 'L' : mode === 'C' ? 'C' : mode === 'Z' ? 'Z' : 'C')],
+              ['Freq', sweepingField ? activeSweepFreq : (mode === 'DCR' ? '—' : freq)],
+              ['Sec', secondary],
+              ['Eq', equivalent === 'PAL' ? 'PAR' : 'SER']
+            ].map(([l, v]) => (
+              <div key={l} style={{ fontSize: 9, color: '#64748b' }}>
+                {l}: <strong style={{ color: '#cbd5e1' }}>{v}</strong>
+              </div>
+            ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, marginTop: 2 }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
+              <span style={{ fontSize: 8, color: '#10b981', fontWeight: 700 }}>LIVE</span>
             </div>
           </div>
         </div>
 
-        {/* ROTOR WINDING */}
-        <div style={S.windingPanel}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: '#1e3a8a', paddingBottom: 6, borderBottom: '2px solid #eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span>🔴 Rotor Winding</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Winding Freq:</span>
-              <input
-                type="text"
-                value={frequencies['rotor_global_freq'] || ''}
-                onChange={e => handleFreqChange('rotor_global_freq', e.target.value)}
-                style={{ width: 60, border: '1px solid #cbd5e1', borderRadius: 4, padding: '2px 4px', fontSize: 11, textAlign: 'center' }}
-                placeholder="e.g. 1kHz"
-              />
-            </div>
+        {/* Temperature */}
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6, flex: '0 0 auto', minWidth: 160 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ fontSize: 14 }}>🌡️</span>
+            <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: 0.6, textTransform: 'uppercase' }}>Temperature</span>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, overflowY: 'auto' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <MeasGroup
-                title="Winding Resistance"
-                keys={RES_KEYS}
-                prefix="rotor_res"
-                unit="ohm"
-                captured={captured}
-                frequencies={frequencies}
-                onCapture={handleCapture}
-                correctWindingTo20={correctWindingTo20}
-                temp={temperature}
-                focusedField={focusedField}
-                editValues={editValues}
-                handleFocus={handleFocus}
-                handleTextChange={handleTextChange}
-                handleBlur={handleBlur}
-                handleFreqChange={handleFreqChange}
-                handleCopyFreq={handleCopyFreq}
-              />
-              <MeasGroup
-                title="Winding Inductance"
-                keys={IND_KEYS}
-                prefix="rotor_ind"
-                unit="mH"
-                captured={captured}
-                frequencies={frequencies}
-                onCapture={handleCapture}
-                focusedField={focusedField}
-                editValues={editValues}
-                handleFocus={handleFocus}
-                handleTextChange={handleTextChange}
-                handleBlur={handleBlur}
-                handleFreqChange={handleFreqChange}
-                handleCopyFreq={handleCopyFreq}
-              />
-            </div>
-            <MeasGroup
-              title="Winding Capacitance"
-              keys={CAP_KEYS}
-              prefix="rotor_cap"
-              unit="nF"
-              captured={captured}
-              frequencies={frequencies}
-              onCapture={handleCapture}
-              focusedField={focusedField}
-              editValues={editValues}
-              handleFocus={handleFocus}
-              handleTextChange={handleTextChange}
-              handleBlur={handleBlur}
-              handleFreqChange={handleFreqChange}
-              handleCopyFreq={handleCopyFreq}
+          {/* Big number */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+            <input
+              type="number"
+              value={temperature}
+              onChange={e => {
+                const v = e.target.value;
+                setTemperature(v);
+                if (record) {
+                  const tNum = parseFloat(v) || 0;
+                  Object.keys(captured).forEach(f => {
+                    api.saveMultimeterField(record.id, f, { temperature: tNum });
+                  });
+                }
+              }}
+              style={{
+                width: 64, border: 'none', outline: 'none',
+                fontSize: 28, fontWeight: 800, color: `hsl(${120 - tempNum * 1.2}, 70%, 40%)`,
+                fontFamily: 'monospace', background: 'transparent', padding: 0,
+              }}
+              min="0" max="200"
             />
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#94a3b8' }}>°C</span>
+          </div>
+          {/* Gradient bar */}
+          <div style={{ height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${tempNum}%`,
+              background: `linear-gradient(to right, #10b981, hsl(${120 - tempNum * 1.2}, 80%, 45%))`,
+              borderRadius: 3,
+              transition: 'width 0.4s ease, background 0.4s ease',
+            }} />
+          </div>
+        </div>
+
+        {/* Phase Balance Analysis */}
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, borderBottom: '1px solid #f1f5f9', paddingBottom: 3, width: '100%', flexShrink: 0 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', letterSpacing: 0.4 }}>📊 Phase Balance</span>
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>R & L imbalance</span>
           </div>
 
-          {/* Analysis box */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', display: 'block', borderBottom: '1px solid #f1f5f9', paddingBottom: 3 }}>📊 PHASE BALANCE ANALYSIS</span>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Resistance Imbalance:</span>
-              {renderImbalanceBadge(rotorResImb)}
+          {/* Stator & Rotor columns side by side */}
+          <div style={{ display: 'flex', gap: 10, width: '100%', flex: 1 }}>
+            {/* Stator column */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderBottom: '1px solid #f8fafc', paddingBottom: 2 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#1e3a8a' }} />
+                <span style={{ fontSize: 8, fontWeight: 800, color: '#1e3a8a', letterSpacing: 0.5 }}>STA</span>
+              </div>
+              {renderImbalanceChip(statorResImb, 'R Resistance')}
+              {renderImbalanceChip(statorIndImb, 'L Inductance')}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-              <span style={{ fontSize: 10, color: '#475569', fontWeight: 600 }}>Inductance Imbalance:</span>
-              {renderImbalanceBadge(rotorIndImb)}
-            </div>
-          </div>
 
-          {/* Live readout display */}
-          <div style={{ background: '#0f172a', borderRadius: 10, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-            <div style={{ display: 'flex', gap: 32 }}>
-              <div>
-                <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Primary ({mode})</span>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#10b981', letterSpacing: -1 }}>
-                    {((correctWindingTo20 && mode === 'R')
-                      ? parseFloat((liveValue * (254.5 / (234.5 + (isNaN(parseFloat(temperature)) ? 25 : parseFloat(temperature))))).toFixed(3))
-                      : liveValue
-                    ).toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-                  </span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#4ade80' }}>{unit}</span>
-                </div>
+            {/* Separator line between Stator & Rotor */}
+            <div style={{ width: 1, background: '#e2e8f0', alignSelf: 'stretch', margin: '2px 0' }} />
+
+            {/* Rotor column */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderBottom: '1px solid #f8fafc', paddingBottom: 2 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#991b1b' }} />
+                <span style={{ fontSize: 8, fontWeight: 800, color: '#991b1b', letterSpacing: 0.5 }}>ROT</span>
               </div>
-              <div>
-                <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, display: 'block', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 2 }}>Secondary ({secondary})</span>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'monospace', color: '#38bdf8', letterSpacing: -1 }}>
-                    {liveSecondaryValue.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }}>
-              {[
-                ['Mode', mode === 'R' ? 'Resistance' : mode === 'L' ? 'Inductance' : 'Capacitance'],
-                ['Freq', freq],
-                ['Sec', secondary],
-                ['Equivalent', equivalent === 'PAL' ? 'Parallel' : 'Series']
-              ].map(([l, v]) => (
-                <div key={l} style={{ fontSize: 10, color: '#64748b' }}>
-                  {l}: <strong style={{ color: '#cbd5e1' }}>{v}</strong>
-                </div>
-              ))}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }}></span>
-                <span style={{ fontSize: 9, color: '#10b981', fontWeight: 700 }}>STREAMING LIVE</span>
-              </div>
+              {renderImbalanceChip(rotorResImb, 'R Resistance')}
+              {renderImbalanceChip(rotorIndImb, 'L Inductance')}
             </div>
           </div>
         </div>

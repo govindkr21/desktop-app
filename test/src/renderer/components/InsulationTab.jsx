@@ -96,8 +96,17 @@ function getRunsForSuffix(tab, suffix, tableData, customRuns) {
   return runs;
 }
 
+function formatResistance(mOhms) {
+  if (mOhms == null || Number.isNaN(mOhms)) return '—';
+  const val = Number(mOhms);
+  if (val >= 1e6) return `${(val / 1e6).toFixed(2)} TΩ`;
+  if (val >= 1e3) return `${(val / 1e3).toFixed(2)} GΩ`;
+  if (val < 1) return `${(val * 1e3).toFixed(1)} kΩ`;
+  return `${val.toFixed(2)} MΩ`;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
-export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange, onCaptureChange }) {
+export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange, onCaptureChange, visible = true }) {
   const correctInsulationTo40 = record?.correctInsulationTo40 || false;
 
   // ─── Core state ────────────────────────────────────────────────────────────
@@ -118,10 +127,10 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
   const [contextMenu, setContextMenu] = useState(null);
   const [runMeta,     setRunMeta]     = useState({}); // { [runId]: { temperature } }
   const [addedTables, setAddedTables] = useState({
-    PI:   ['R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
-    DAR:  ['R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
-    SV:   ['R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
-    RAMP: ['R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
+    PI:   ['RST-GND-Stator', 'R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
+    DAR:  ['RST-GND-Stator', 'R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
+    SV:   ['RST-GND-Stator', 'R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
+    RAMP: ['RST-GND-Stator', 'R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'],
   });
   const [suffixToAdd, setSuffixToAdd] = useState('');
 
@@ -150,8 +159,13 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
     if (!selectedTable) return;
     const nextMeta = { ...(runMeta[selectedTable] || {}), temperature: v };
     setRunMeta(prev => ({ ...prev, [selectedTable]: nextMeta }));
-    if (record) await api.saveInsulationMeta(record.id, activeTab, selectedTable, nextMeta);
-  }, [selectedTable, runMeta, record, activeTab]);
+    if (record) {
+      await api.saveInsulationMeta(record.id, activeTab, selectedTable, nextMeta);
+      if (selectedTable.includes('RST-GND-Stator')) {
+        onChange('temperature', v);
+      }
+    }
+  }, [selectedTable, runMeta, record, activeTab, onChange]);
 
   // ─── Refs ──────────────────────────────────────────────────────────────────
   const simRef              = useRef(null);
@@ -240,7 +254,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
       window.alert(`A run named "${newRunName}" already exists.`);
       return;
     }
-    if (record && tableData[activeTab]?.[runId]?.length > 0) {
+    if (record) {
       await api.renameInsulationTable(record.id, activeTab, runId, newRunId);
     }
     setTableData(prev => {
@@ -329,7 +343,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
       }
       for (const tabKey of ['PI', 'DAR', 'SV', 'RAMP']) {
         if (loadedAdded[tabKey].length === 0)
-          loadedAdded[tabKey] = ['R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'];
+          loadedAdded[tabKey] = ['RST-GND-Stator', 'R-GND-Stator', 'S-GND-Stator', 'T-GND-Stator'];
       }
       setTableData(parsedTableData);
       setRunMeta(parsedRunMeta);
@@ -383,6 +397,26 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
     if (isCapturing) { stopCapture(); return; }
     if (!selectedTable) return;
     if (!confirmReTest()) return;
+
+    if (record && !record.insulationTempMappedToMultimeter) {
+      const currentTableTemp = getRunTemperature(selectedTable);
+      if (onChange) {
+        onChange({
+          temperature: currentTableTemp,
+          insulationTempMappedToMultimeter: true
+        });
+      }
+      try {
+        const mulData = await api.getMultimeterData(record.id);
+        const tNum = parseFloat(currentTableTemp) || 0;
+        for (const f of Object.keys(mulData)) {
+          await api.saveMultimeterField(record.id, f, { temperature: tNum });
+        }
+      } catch (err) {
+        console.error('Failed to map temperature to multimeter fields:', err);
+      }
+    }
+
     const existingRows = tableData[activeTab]?.[selectedTable] || [];
     if (existingRows.length > 0) {
       if (!window.confirm(`"${selectedTable}" already has data. Starting capture will delete existing rows. Continue?`)) return;
@@ -467,7 +501,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
         }
       });
     }
-  }, [isCapturing, activeTab, selectedTable, tableData, record, stopCapture, demoMode, saveRow, confirmReTest, handleTestCompletion]);
+  }, [isCapturing, activeTab, selectedTable, tableData, record, stopCapture, demoMode, saveRow, confirmReTest, handleTestCompletion, onChange, getRunTemperature]);
 
   const clearTab = useCallback(async () => {
     if (!selectedTable) return;
@@ -664,7 +698,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
                       <td style={{ padding: '3px 4px', textAlign: 'right',  fontFamily: 'monospace' }}>{r.voltage}</td>
                       <td style={{ padding: '3px 4px', textAlign: 'right',  fontFamily: 'monospace' }}>{r.actualVoltage}</td>
                       <td style={{ padding: '3px 4px', textAlign: 'right',  fontFamily: 'monospace' }}>{r.current}</td>
-                      <td style={{ padding: '3px 4px', textAlign: 'right',  fontFamily: 'monospace', fontWeight: 600 }}>{displayRes?.toLocaleString()}</td>
+                      <td style={{ padding: '3px 4px', textAlign: 'right',  fontFamily: 'monospace', fontWeight: 600 }}>{formatResistance(displayRes)}</td>
                     </tr>
                   );
                 })
@@ -677,6 +711,10 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
   };
 
   // ══════════════════════════════════════════════════════════════════════════
+  if (!visible) {
+    return <div style={{ display: 'none' }} />;
+  }
+
   return (
     <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100vh - 112px)', boxSizing: 'border-box' }}>
 
@@ -858,25 +896,52 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
                   </div>
                 ))}
               </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: '#475569' }}>TEST TEMP</span>
-                  <input
-                    type="number"
-                    value={getRunTemperature(selectedTable)}
-                    onChange={e => handleTempChange(e.target.value)}
-                    style={{ width: 48, border: '1px solid #cbd5e1', borderRadius: 4, padding: '3px 6px', fontSize: 11, fontWeight: 700, textAlign: 'center' }}
-                  />
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>°C</span>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+                {/* Temperature card */}
+                <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5, minWidth: 140 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ fontSize: 13 }}>🌡️</span>
+                    <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: 0.6, textTransform: 'uppercase' }}>Test Temperature</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 3 }}>
+                    <input
+                      type="number"
+                      value={getRunTemperature(selectedTable)}
+                      onChange={e => handleTempChange(e.target.value)}
+                      style={{
+                        width: 56, border: 'none', outline: 'none',
+                        fontSize: 24, fontWeight: 800,
+                        color: `hsl(${120 - Math.min(tempVal, 100) * 1.2}, 70%, 40%)`,
+                        fontFamily: 'monospace', background: 'transparent', padding: 0,
+                      }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8' }}>°C</span>
+                  </div>
+                  <div style={{ height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${Math.min(tempVal, 100)}%`,
+                      background: `linear-gradient(to right, #10b981, hsl(${120 - Math.min(tempVal,100) * 1.2}, 80%, 45%))`,
+                      borderRadius: 2,
+                      transition: 'width 0.4s ease',
+                    }} />
+                  </div>
                 </div>
-                <div style={{ height: 18, width: 1, background: '#cbd5e1' }} />
-                <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                {/* Raw Insulation Resistance (Rt) */}
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 14px' }}>
                   <div>
-                    <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, display: 'block' }}>CORRECTED R40 (IEEE 43)</span>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: '#1e40af' }}>{Rc40 !== null ? `${Rc40.toLocaleString()} MΩ` : '—'}</span>
+                    <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, display: 'block', marginBottom: 2 }}>RAW INSULATION RESISTANCE (Rt)</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: '#475569' }}>{Rt !== null ? formatResistance(Rt) : '—'}</span>
+                  </div>
+                </div>
+                {/* Corrected R40 */}
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 14px' }}>
+                  <div>
+                    <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, display: 'block', marginBottom: 2 }}>CORRECTED R40 (IEEE 43)</span>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: '#1e40af' }}>{Rc40 !== null ? formatResistance(Rc40) : '—'}</span>
                   </div>
                   {Rc40 !== null && (
-                    <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: passColor, borderRadius: 6, padding: '4px 8px', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, color: '#fff', background: passColor, borderRadius: 6, padding: '4px 10px', boxShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
                       {passStatus}
                     </span>
                   )}
@@ -930,9 +995,9 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
                 ))}
                 <div style={{ height: 1, background: '#cbd5e1' }} />
                 {[
-                  ['Final Resistance', finalR != null ? `${finalR.toLocaleString()} MΩ` : '—'],
+                  ['Final Resistance', finalR != null ? formatResistance(finalR) : '—'],
                   ['Test Voltage (Final)', finalV != null ? `${finalV} V` : '—'],
-                  ['Corrected R40 (IEEE 43)', Rc40m != null ? `${Rc40m.toLocaleString()} MΩ` : '—'],
+                  ['Corrected R40 (IEEE 43)', Rc40m != null ? formatResistance(Rc40m) : '—'],
                 ].map(([k, v]) => (
                   <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
                     <span style={{ fontWeight: 600, color: '#64748b' }}>{k}:</span>

@@ -5,7 +5,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, powerMonitor } = require('el
 const path = require('path');
 
 // Must match packagerConfig.name so dev (`npm start`) and installed .exe share one data folder.
-app.setName('Sarox Winding & Insulation Tester');
+app.setName('Sarox Winding & Insulation Tester V2');
 
 // Initialize file logging
 const logger = require('./logger');
@@ -18,19 +18,41 @@ const _reports = require('./reports'); const reports = _reports.default || _repo
 // Keep a global reference so window is not garbage collected
 let mainWindow;
 
-// Catch uncaught exceptions and unhandled rejections gracefully to prevent crash popups
+// ── Crash safety: flush DB before any unhandled crash or rejection ──────────
+//
+// With sync writes (database.js) data is already on disk when this fires.
+// These handlers are an extra safety net for any edge case.
+
+function safeFlush(label) {
+  try {
+    require('./database').flush();
+    console.log(`[DB] Flushed on ${label}.`);
+  } catch (e) {
+    console.error(`[DB] Flush on ${label} failed:`, e.message);
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught Exception:', err);
+  safeFlush('uncaughtException');
   if (mainWindow && mainWindow.webContents) {
-    mainWindow.webContents.send('device:error', 'Main Process Error: ' + err.message);
+    try { mainWindow.webContents.send('device:error', 'Main Process Error: ' + err.message); } catch (_) {}
+  }
+  // Do not re-throw: keep the app running if possible so the user can save their work.
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Main] Unhandled Rejection:', reason);
+  safeFlush('unhandledRejection');
+  if (mainWindow && mainWindow.webContents) {
+    try { mainWindow.webContents.send('device:error', 'Main Process Rejection: ' + (reason ? reason.message || reason : 'Unknown rejection')); } catch (_) {}
   }
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Main] Unhandled Rejection:', reason);
-  if (mainWindow && mainWindow.webContents) {
-    mainWindow.webContents.send('device:error', 'Main Process Rejection: ' + (reason ? reason.message || reason : 'Unknown rejection'));
-  }
+// process.on('exit') is the absolute last-resort — it fires synchronously on
+// every exit path including SIGKILL. Only synchronous operations work here.
+process.on('exit', (code) => {
+  safeFlush('process exit (code=' + code + ')');
 });
 
 const createWindow = () => {
@@ -64,16 +86,18 @@ const createWindow = () => {
 };
 
 // ── App lifecycle ─────────────────────────────
-app.on('ready', () => {
+app.on('ready', async () => {
   // Init database first
   const db = require('./database');
-  db.init();
+  await db.init();
 
   createWindow();
 
-  // Cleanly close serial ports when the laptop goes to sleep / suspends
+  // Cleanly close serial ports when the laptop goes to sleep / suspends.
+  // Also flush DB so data is safe if the system doesn't resume cleanly.
   powerMonitor.on('suspend', () => {
-    console.log('[Main] System suspending. Closing all active device connections.');
+    console.log('[Main] System suspending. Flushing DB and closing device connections.');
+    safeFlush('system suspend');
     try {
       serial.disconnectMegger();
       serial.disconnectMultimeter();
@@ -83,12 +107,16 @@ app.on('ready', () => {
   });
 });
 
-app.on('before-quit', () => {
-  try {
-    require('./database').flush();
-  } catch (e) {
-    console.error('[DB] Flush on quit failed:', e.message);
-  }
+app.on('before-quit', () => safeFlush('before-quit'));
+
+// Flush on SIGTERM (system shutdown / Task Manager) and SIGINT (Ctrl+C).
+// before-quit does NOT fire on these signals in some Electron versions.
+['SIGTERM', 'SIGINT'].forEach(signal => {
+  process.on(signal, () => {
+    console.log(`[Main] ${signal} received. Flushing database before exit.`);
+    safeFlush(signal);
+    process.exit(0);
+  });
 });
 
 app.on('window-all-closed', () => {
@@ -128,9 +156,9 @@ ipcMain.handle('db:getMultimeterData', (_, recordId) => db().getMultimeterData(r
 ipcMain.handle('db:clearRecordTestData', (_, recordId) => db().clearRecordTestData(recordId));
 
 // ── Reports ───────────────────────────────────
-ipcMain.handle('report:exportExcel', async (_, recordId) => {
+ipcMain.handle('report:exportExcel', async (_, recordId, chartImages) => {
   try {
-    return await reports.exportExcel(recordId, mainWindow);
+    return await reports.exportExcel(recordId, mainWindow, chartImages);
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -160,6 +188,20 @@ ipcMain.handle('shell:openLogs', () => {
 });
 
 // ── Serial / Device connection ─────────────────
+
+ipcMain.handle('app:relaunch', () => {
+  console.log('[Main] Relaunching application...');
+  try {
+    serial.disconnectMegger();
+  } catch (_) {}
+  try {
+    serial.disconnectMultimeter();
+  } catch (_) {}
+  safeFlush('relaunch');
+  app.relaunch();
+  app.exit(0);
+});
+
 ipcMain.handle('serial:listPorts', async () => {
   try {
     const ports = await serial.listPorts();
@@ -169,10 +211,44 @@ ipcMain.handle('serial:listPorts', async () => {
   }
 });
 
-ipcMain.handle('serial:connectMegger', (_, options) => {
+// Helper: wait for a connection result on the serial EventEmitter, or timeout.
+// serial.deviceEvents emits 'megger:connected', 'multimeter:connected', 'device:error'.
+function waitForConnection(successEvent, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const emitter = serial.deviceEvents;
+    if (!emitter) { resolve(false); return; }
+    let settled = false;
+
+    const onSuccess = () => { if (!settled) { settled = true; cleanup(); resolve(true); } };
+    const onError   = (msg) => { if (!settled) { settled = true; cleanup(); resolve(false); } };
+    const cleanup = () => {
+      emitter.removeListener(successEvent, onSuccess);
+      emitter.removeListener('device:error',  onError);
+    };
+
+    emitter.once(successEvent, onSuccess);
+    emitter.once('device:error', onError);
+
+    setTimeout(() => {
+      if (!settled) { settled = true; cleanup(); resolve(false); }
+    }, timeoutMs);
+  });
+}
+
+ipcMain.handle('serial:connectMegger', async (_, options) => {
   try {
     serial.setWindow(mainWindow);
     serial.connectMegger(options);
+
+    // Wait up to 8s for the megger:connected event (or a device error).
+    const connected = await waitForConnection('megger:connected', 8000);
+
+    if (!connected) {
+      try { serial.disconnectMegger(); } catch (_) {}
+      const errMsg = 'Connection timed out. Check the COM port, baud rate, and that the Megger is powered on and set to TRANSMIT.';
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Megger: ' + errMsg);
+      return { success: false, error: errMsg };
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -188,10 +264,20 @@ ipcMain.handle('serial:disconnectMegger', () => {
   }
 });
 
-ipcMain.handle('serial:connectMultimeter', (_, options) => {
+ipcMain.handle('serial:connectMultimeter', async (_, options) => {
   try {
     serial.setWindow(mainWindow);
     serial.connectMultimeter(options);
+
+    // Wait up to 8s for the multimeter:connected event (or a device error).
+    const connected = await waitForConnection('multimeter:connected', 8000);
+
+    if (!connected) {
+      try { serial.disconnectMultimeter(); } catch (_) {}
+      const errMsg = 'Connection timed out. Check the COM port, baud rate, and that the multimeter is powered on.';
+      if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter: ' + errMsg);
+      return { success: false, error: errMsg };
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };

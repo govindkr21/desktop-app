@@ -1,9 +1,32 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import logo from '../../assets/logo.png';
 
 export default function StartScreen({ records, onNew, onOpen, onDuplicate, onDelete }) {
   const [showOpenModal, setShowOpenModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Build a set of "clientName|tag" pairs that appear more than once.
+  // Industry rule: same tag is fine across different clients — only flag
+  // when the SAME client has two records with the same Motor Utility Tag.
+  const duplicateClientTags = useMemo(() => {
+    const seen = {};
+    records.forEach(r => {
+      const tag    = (r.motorUtilityTag || '').trim().toLowerCase();
+      const client = (r.clientName      || '').trim().toLowerCase();
+      if (!tag || !client) return;
+      const key = `${client}|${tag}`;
+      seen[key] = (seen[key] || 0) + 1;
+    });
+    return new Set(Object.keys(seen).filter(k => seen[k] > 1));
+  }, [records]);
+
+  // Helper — is this specific record a duplicate within its client?
+  const isClientTagDuplicate = (r) => {
+    const tag    = (r.motorUtilityTag || '').trim().toLowerCase();
+    const client = (r.clientName      || '').trim().toLowerCase();
+    if (!tag || !client) return false;
+    return duplicateClientTags.has(`${client}|${tag}`);
+  };
 
   const cardStyle = (primary) => ({
     background: primary ? '#1e40af' : '#fff',
@@ -31,7 +54,32 @@ export default function StartScreen({ records, onNew, onOpen, onDuplicate, onDel
   });
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f1f5f9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+    <div style={{ minHeight: '100vh', background: '#f1f5f9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20, position: 'relative' }}>
+
+      {/* Top right refresh button */}
+      <button
+        onClick={() => {
+          if (window.confirm('Are you sure you want to refresh/restart the application? This will disconnect any active serial ports.')) {
+            window.electronAPI.relaunchApp();
+          }
+        }}
+        style={{
+          position: 'absolute', top: 20, right: 20,
+          background: '#fff', color: '#2563eb', border: '1px solid #2563eb',
+          borderRadius: 6, padding: '6px 12px', fontSize: 11, fontWeight: 700,
+          cursor: 'pointer', transition: 'all 0.15s',
+          display: 'flex', alignItems: 'center', gap: 4,
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = '#eff6ff';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = '#fff';
+        }}
+      >
+        🔄 Refresh
+      </button>
 
       <div style={{ textAlign: 'center', marginBottom: 36, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <img src={logo} alt="Sarox Technology Inc." style={{ height: 80, objectFit: 'contain', marginBottom: 8 }} />
@@ -158,9 +206,17 @@ export default function StartScreen({ records, onNew, onOpen, onDuplicate, onDel
                     }}
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', margin: 0 }}>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', margin: 0, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         {r.clientName || '(No Client)'}
                         {r.motorUtilityTag ? <span style={{ color: '#1e40af' }}> — {r.motorUtilityTag}</span> : ''}
+                        {isClientTagDuplicate(r) && (
+                          <span style={{
+                            background: '#fef2f2', border: '1px solid #fca5a5',
+                            borderRadius: 4, padding: '1px 5px',
+                            fontSize: 9, fontWeight: 700, color: '#b91c1c',
+                            whiteSpace: 'nowrap',
+                          }}>⚠ Duplicate Tag</span>
+                        )}
                       </p>
                       <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>
                         {r.motorManufacturer ? `${r.motorManufacturer} · ` : ''}{r.equipmentType || 'Motor'}

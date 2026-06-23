@@ -166,10 +166,18 @@ export default function ConnectionSetupModal({
     const host = customOpts ? customOpts.host : mHost;
     const port = customOpts ? customOpts.port : mTcpPort;
 
+    // Client-side safety timeout: if the main process never responds (hung driver etc.),
+    // reset UI after 10s so the user isn't stuck on "connecting..." forever.
+    const safetyTimer = setTimeout(() => {
+      setMeggerStatus(prev => prev === 'connecting' ? 'disconnected' : prev);
+      setErrorMegger('Connection timed out. Check COM port / baud rate and try again.');
+    }, 10000);
+
     try {
       let result;
       if (type === 'tcp') {
         if (!host || !port) {
+          clearTimeout(safetyTimer);
           setErrorMegger('Enter valid TCP Host & Port.');
           setMeggerStatus('disconnected');
           return;
@@ -177,12 +185,14 @@ export default function ConnectionSetupModal({
         result = await api.connectMegger({ connectionType: 'tcp', host, port });
       } else {
         if (!portPath) {
+          clearTimeout(safetyTimer);
           setErrorMegger('Please select a COM port.');
           setMeggerStatus('disconnected');
           return;
         }
         result = await api.connectMegger({ connectionType: 'serial', portPath, baudRate });
       }
+      clearTimeout(safetyTimer);
 
       if (result.success) {
         const fullPort = type === 'tcp' ? `TCP://${host}:${port}` : portPath;
@@ -193,6 +203,7 @@ export default function ConnectionSetupModal({
         setMeggerStatus('disconnected');
       }
     } catch (err) {
+      clearTimeout(safetyTimer);
       setErrorMegger(err.message);
       setMeggerStatus('disconnected');
     }
@@ -228,10 +239,16 @@ export default function ConnectionSetupModal({
     const host = customOpts ? customOpts.host : uHost;
     const port = customOpts ? customOpts.port : uTcpPort;
 
+    const safetyTimer = setTimeout(() => {
+      setMultimeterStatus(prev => prev === 'connecting' ? 'disconnected' : prev);
+      setErrorMulti('Connection timed out. Check COM port / baud rate and try again.');
+    }, 10000);
+
     try {
       let result;
       if (type === 'tcp') {
         if (!host || !port) {
+          clearTimeout(safetyTimer);
           setErrorMulti('Enter valid TCP Host & Port.');
           setMultimeterStatus('disconnected');
           return;
@@ -239,12 +256,14 @@ export default function ConnectionSetupModal({
         result = await api.connectMultimeter({ connectionType: 'tcp', host, port });
       } else {
         if (!portPath) {
+          clearTimeout(safetyTimer);
           setErrorMulti('Please select a COM port.');
           setMultimeterStatus('disconnected');
           return;
         }
         result = await api.connectMultimeter({ connectionType: 'serial', portPath, baudRate });
       }
+      clearTimeout(safetyTimer);
 
       if (result.success) {
         const fullPort = type === 'tcp' ? `TCP://${host}:${port}` : portPath;
@@ -255,6 +274,7 @@ export default function ConnectionSetupModal({
         setMultimeterStatus('disconnected');
       }
     } catch (err) {
+      clearTimeout(safetyTimer);
       setErrorMulti(err.message);
       setMultimeterStatus('disconnected');
     }
@@ -437,16 +457,26 @@ export default function ConnectionSetupModal({
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={() => connectMeggerDevice()}
-                    disabled={meggerStatus === 'connecting'}
-                    style={{
-                      width: '100%', padding: '8px 10px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                      opacity: meggerStatus === 'connecting' ? 0.7 : 1
-                    }}
-                  >
-                    {meggerStatus === 'connecting' ? '⏳ Connecting...' : '⚡ Connect Megger'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => connectMeggerDevice()}
+                      disabled={meggerStatus === 'connecting'}
+                      style={{
+                        flex: 1, padding: '8px 10px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        opacity: meggerStatus === 'connecting' ? 0.7 : 1
+                      }}
+                    >
+                      {meggerStatus === 'connecting' ? '⏳ Connecting...' : '⚡ Connect Megger'}
+                    </button>
+                    {meggerStatus === 'connecting' && (
+                      <button
+                        onClick={() => { setMeggerStatus('disconnected'); setErrorMegger('Connection cancelled.'); }}
+                        style={{ padding: '8px 10px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer', color: '#475569', whiteSpace: 'nowrap' }}
+                      >
+                        ✕ Cancel
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -562,16 +592,26 @@ export default function ConnectionSetupModal({
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={() => connectMultimeterDevice()}
-                    disabled={multimeterStatus === 'connecting'}
-                    style={{
-                      width: '100%', padding: '8px 10px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                      opacity: multimeterStatus === 'connecting' ? 0.7 : 1
-                    }}
-                  >
-                    {multimeterStatus === 'connecting' ? '⏳ Connecting...' : '🔌 Connect Multimeter'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => connectMultimeterDevice()}
+                      disabled={multimeterStatus === 'connecting'}
+                      style={{
+                        flex: 1, padding: '8px 10px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        opacity: multimeterStatus === 'connecting' ? 0.7 : 1
+                      }}
+                    >
+                      {multimeterStatus === 'connecting' ? '⏳ Connecting...' : '🔌 Connect Multimeter'}
+                    </button>
+                    {multimeterStatus === 'connecting' && (
+                      <button
+                        onClick={() => { setMultimeterStatus('disconnected'); setErrorMulti('Connection cancelled.'); }}
+                        style={{ padding: '8px 10px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer', color: '#475569', whiteSpace: 'nowrap' }}
+                      >
+                        ✕ Cancel
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>

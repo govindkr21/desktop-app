@@ -7,6 +7,12 @@
 
 const { SerialPort } = require('serialport');
 const net = require('net');
+const { EventEmitter } = require('events');
+
+// Shared event bus that index.js IPC handlers use to detect connection outcomes.
+// Emits: 'megger:connected', 'multimeter:connected', 'device:error'
+const deviceEvents = new EventEmitter();
+deviceEvents.setMaxListeners(20);
 
 let meggerPort = null;
 let multimeterPort = null;
@@ -17,6 +23,24 @@ let meggerRxBuffer = '';
 let multimeterRxBuffer = '';
 let multimeterInterval = null;
 let multimeterMode = 'R';
+
+// Track current physical state of multimeter to prevent redundant/rapid SCPI calls
+let currentMultimeterMode = '';
+let currentMultimeterFreq = '';
+let currentMultimeterSec = '';
+let currentMultimeterEquiv = '';
+
+let multimeterCommandQueue = [];
+let isProcessingMultimeterQueue = false;
+
+function clearMultimeterState() {
+  currentMultimeterMode = '';
+  currentMultimeterFreq = '';
+  currentMultimeterSec = '';
+  currentMultimeterEquiv = '';
+  multimeterCommandQueue = [];
+  isProcessingMultimeterQueue = false;
+}
 
 // MIT 525 stream: **,HH:MM:SS,nomV,actV,current,resistance,mode,pass,
 const MEGGER_RECORD_RE = /\*\*,\d{2}:\d{2}:\d{2},\d+,\d+,[^,\r\n]+,[^,\r\n]+,\d+,[YNyn],/i;
@@ -81,6 +105,17 @@ function handleMeggerPayload(line) {
 function processMeggerRx(chunk) {
   const text = emitDeviceRaw('megger', chunk);
   meggerRxBuffer += text;
+
+  const upperBuf = meggerRxBuffer.toUpperCase();
+  if (upperBuf.includes('TEST COMPLETED') || upperBuf.includes('TEST COMPLETE')) {
+    console.log('[Megger] Test completed message received. Stopping data acquisition.');
+    if (mainWindow) {
+      mainWindow.webContents.send('megger:stopped', { completed: true, reason: 'FINISHED' });
+    }
+    meggerRxBuffer = '';
+    disconnectMegger();
+    return;
+  }
 
   const { lines, rest } = splitRxBuffer(meggerRxBuffer);
   meggerRxBuffer = rest;
@@ -208,6 +243,7 @@ function connectMegger(options) {
     meggerSocket.on('error', (err) => {
       console.error('[Megger TCP] Error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Megger TCP: ' + err.message);
+      deviceEvents.emit('device:error', 'Megger TCP: ' + err.message);
     });
 
     meggerSocket.on('close', () => {
@@ -220,10 +256,12 @@ function connectMegger(options) {
       meggerSocket.connect({ host, port }, () => {
         console.log(`[Megger TCP] Connected to ${host}:${port}`);
         if (mainWindow) mainWindow.webContents.send('megger:connected');
+        deviceEvents.emit('megger:connected');
       });
     } catch (err) {
       console.error('[Megger TCP] Synchronous connect error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Megger TCP Connect Error: ' + err.message);
+      deviceEvents.emit('device:error', 'Megger TCP Connect Error: ' + err.message);
     }
 
     wireMeggerInput(meggerSocket);
@@ -241,6 +279,7 @@ function connectMegger(options) {
     meggerPort.on('open', () => {
       console.log('[Megger] Connected on', portPath);
       if (mainWindow) mainWindow.webContents.send('megger:connected');
+      deviceEvents.emit('megger:connected');
     });
 
     wireMeggerInput(meggerPort);
@@ -248,6 +287,7 @@ function connectMegger(options) {
     meggerPort.on('error', (err) => {
       console.error('[Megger] Error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Megger: ' + err.message);
+      deviceEvents.emit('device:error', 'Megger: ' + err.message);
     });
 
     meggerPort.on('close', () => {
@@ -312,7 +352,7 @@ function parseMeggerLine(line) {
   // Strip "greater than" (>) or "less than" (<) operators
   rawResist = rawResist.replace(/[><]/g, '').trim();
   const resistanceInOhms = parseFloat(rawResist) || 0;
-  const resistanceInMegaOhms = Math.round(resistanceInOhms / 1e6);
+  const resistanceInMegaOhms = parseFloat((resistanceInOhms / 1e6).toFixed(4));
 
   return {
     time:          timeInSeconds,
@@ -355,6 +395,10 @@ function disconnectMegger() {
 function startMultimeterPolling() {
   stopMultimeterPolling();
   multimeterInterval = setInterval(() => {
+    if (isProcessingMultimeterQueue) {
+      console.log('[Multimeter] Config commands in progress. Skipping poll tick.');
+      return;
+    }
     const query = 'FETCh?\r\n';
     if (multimeterPort && multimeterPort.isOpen) {
       multimeterPort.write(query, (err) => {
@@ -376,6 +420,7 @@ function stopMultimeterPolling() {
 }
 
 function connectMultimeter(options) {
+  clearMultimeterState();
   let connectionType = 'serial';
   let portPath = 'COM4';
   let baudRate = 9600;
@@ -405,6 +450,7 @@ function connectMultimeter(options) {
     multimeterSocket.on('error', (err) => {
       console.error('[Multimeter TCP] Error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter TCP: ' + err.message);
+      deviceEvents.emit('device:error', 'Multimeter TCP: ' + err.message);
     });
 
     multimeterSocket.on('close', () => {
@@ -417,11 +463,13 @@ function connectMultimeter(options) {
       multimeterSocket.connect({ host, port }, () => {
         console.log(`[Multimeter TCP] Connected to ${host}:${port}`);
         if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+        deviceEvents.emit('multimeter:connected');
         startMultimeterPolling();
       });
     } catch (err) {
       console.error('[Multimeter TCP] Synchronous connect error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter TCP Connect Error: ' + err.message);
+      deviceEvents.emit('device:error', 'Multimeter TCP Connect Error: ' + err.message);
     }
 
     wireMultimeterInput(multimeterSocket);
@@ -439,6 +487,7 @@ function connectMultimeter(options) {
     multimeterPort.on('open', () => {
       console.log('[Multimeter] Connected on', portPath);
       if (mainWindow) mainWindow.webContents.send('multimeter:connected');
+      deviceEvents.emit('multimeter:connected');
       startMultimeterPolling();
     });
 
@@ -447,6 +496,7 @@ function connectMultimeter(options) {
     multimeterPort.on('error', (err) => {
       console.error('[Multimeter] Error:', err.message);
       if (mainWindow) mainWindow.webContents.send('device:error', 'Multimeter: ' + err.message);
+      deviceEvents.emit('device:error', 'Multimeter: ' + err.message);
     });
 
     multimeterPort.on('close', () => {
@@ -470,30 +520,134 @@ function connectMultimeter(options) {
 // ── Send command to multimeter to change mode ──
 // Replace command strings with actual commands from device manual
 function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
-  multimeterMode = mode;
-  const command = buildCommand(mode, frequency, secondary, equivalent);
+  const cmds = [];
+  const modeVal = mode ? mode.toUpperCase() : 'C';
+  if (modeVal !== currentMultimeterMode) {
+    cmds.push(`FUNC:impa ${modeVal}`);
+    // Changing primary parameter changes physical secondary default; invalidate tracking
+    currentMultimeterSec = '';
+  }
   
-  if (multimeterPort && multimeterPort.isOpen) {
-    multimeterPort.write(command + '\r\n', (err) => {
-      if (err) console.error('[Multimeter] Write error:', err.message);
-      else console.log('[Multimeter] Command sent:', command);
-    });
+  let freqVal = '1000';
+  if (frequency) {
+    const f = frequency.toLowerCase();
+    if (f.includes('100hz')) freqVal = '100';
+    else if (f.includes('120hz')) freqVal = '120';
+    else if (f.includes('1khz')) freqVal = '1000';
+    else if (f.includes('10khz')) freqVal = '10000';
+    else if (f.includes('100khz')) freqVal = '100000';
+  }
+  if (freqVal !== currentMultimeterFreq) {
+    cmds.push(`FREQ ${freqVal}`);
+  }
+  
+  let secVal = 'D';
+  if (modeVal === 'R' || modeVal === 'Z') {
+    secVal = 'THETA';
+  } else if (modeVal === 'L') {
+    secVal = 'Q';
+  }
+  if (secondary) {
+    const s = secondary.toUpperCase();
+    if (s === 'R' || s === 'ESR') {
+      secVal = 'ESR';
+    } else if (s === 'DEG' || s === 'THETA') {
+      secVal = 'THETA';
+    } else {
+      secVal = s;
+    }
+  }
+  if (secVal !== currentMultimeterSec) {
+    cmds.push(`FUNC:impb ${secVal}`);
+  }
+  
+  let equivVal = 'SER';
+  if (equivalent) {
+    equivVal = equivalent.toUpperCase() === 'PAL' ? 'PAL' : 'SER';
+  }
+  if (equivVal !== currentMultimeterEquiv) {
+    cmds.push(`FUNC:EQU ${equivVal}`);
+  }
+  
+  if (cmds.length === 0) {
+    console.log('[Multimeter] State already matches requested settings. Skipping commands.');
+    return;
   }
 
-  if (multimeterSocket && !multimeterSocket.destroyed) {
-    multimeterSocket.write(command + '\r\n', (err) => {
-      if (err) console.error('[Multimeter TCP] Write error:', err.message);
-      else console.log('[Multimeter TCP] Command sent:', command);
-    });
+  // Discard any unsent pending commands from previous requests to avoid backlog
+  multimeterCommandQueue = [];
+  multimeterCommandQueue.push(...cmds);
+
+  if (!isProcessingMultimeterQueue) {
+    processNextMultimeterCommand();
+  }
+}
+
+function processNextMultimeterCommand() {
+  if (multimeterCommandQueue.length === 0) {
+    isProcessingMultimeterQueue = false;
+    return;
+  }
+
+  isProcessingMultimeterQueue = true;
+  const cmd = multimeterCommandQueue.shift();
+  const cmdString = cmd + '\r\n';
+  
+  const isModeChange = cmd.toUpperCase().startsWith('FUNC:IMPA');
+  const delay = isModeChange ? 1200 : 200;
+
+  const handleWriteResult = (err) => {
+    if (err) {
+      console.error('[Multimeter] Write error:', err.message);
+      setTimeout(processNextMultimeterCommand, delay);
+    } else {
+      console.log('[Multimeter] Command sent:', cmd.trim());
+      setTimeout(() => {
+        const upperCmd = cmd.toUpperCase().trim();
+        if (upperCmd.startsWith('FUNC:IMPA')) {
+          const newMode = upperCmd.slice(9).trim();
+          currentMultimeterMode = newMode;
+          multimeterMode = newMode;
+          console.log('[Multimeter] Physical mode change settled. Parser scaling updated to:', newMode);
+        } else if (upperCmd.startsWith('FREQ')) {
+          currentMultimeterFreq = upperCmd.slice(4).trim();
+          console.log('[Multimeter] Frequency changed to:', currentMultimeterFreq);
+        } else if (upperCmd.startsWith('FUNC:IMPB')) {
+          currentMultimeterSec = upperCmd.slice(9).trim();
+          console.log('[Multimeter] Secondary parameter changed to:', currentMultimeterSec);
+        } else if (upperCmd.startsWith('FUNC:EQU')) {
+          currentMultimeterEquiv = upperCmd.slice(8).trim();
+          console.log('[Multimeter] Equivalent circuit changed to:', currentMultimeterEquiv);
+        }
+        processNextMultimeterCommand();
+      }, delay);
+    }
+  };
+
+  if (multimeterPort && multimeterPort.isOpen) {
+    multimeterPort.write(cmdString, handleWriteResult);
+  } else if (multimeterSocket && !multimeterSocket.destroyed) {
+    multimeterSocket.write(cmdString, handleWriteResult);
+  } else {
+    setTimeout(processNextMultimeterCommand, delay);
   }
 }
 
 // ── Replace with actual command format from manual ──
 function buildCommand(mode, frequency, secondary, equivalent) {
-  // mode: 'L', 'C', 'R'
+  // mode: 'L', 'C', 'R', 'Z', 'DCR'
   // frequency: '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'
   // secondary: 'Q', 'D', 'R', 'DEG'
   // equivalent: 'SER', 'PAL'
+
+  let modeVal = 'C';
+  if (mode) {
+    modeVal = mode.toUpperCase();
+  }
+
+  if (modeVal === 'DCR') {
+    return 'FUNC:impa DCR';
+  }
 
   let freqVal = '1000';
   if (frequency) {
@@ -505,12 +659,14 @@ function buildCommand(mode, frequency, secondary, equivalent) {
     else if (f.includes('100khz')) freqVal = '100000';
   }
 
-  let modeVal = 'C';
-  if (mode) {
-    modeVal = mode.toUpperCase();
+  // Set secondary parameter defaults based on primary mode to avoid invalid parameter errors
+  let secVal = 'D';
+  if (modeVal === 'R' || modeVal === 'Z') {
+    secVal = 'THETA';
+  } else if (modeVal === 'L') {
+    secVal = 'Q';
   }
 
-  let secVal = 'D';
   if (secondary) {
     const s = secondary.toUpperCase();
     if (s === 'R' || s === 'ESR') {
@@ -560,6 +716,7 @@ function parseMultimeterLine(line) {
 
 function disconnectMultimeter() {
   stopMultimeterPolling();
+  clearMultimeterState();
   multimeterRxBuffer = '';
   if (multimeterPort) {
     const portToClose = multimeterPort;
@@ -633,6 +790,7 @@ function stopMultimeterSimulator() {
 }
 
 module.exports = {
+  deviceEvents,
   setWindow,
   listPorts,
   connectMegger,

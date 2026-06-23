@@ -1,9 +1,14 @@
 // src/renderer/components/InfoTab.jsx
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
+
+const TreeLine = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 20, margin: '2px 0' }}>
+    <div style={{ width: 3, background: '#3b82f6', flex: 1, borderRadius: 2 }}></div>
+  </div>
+);
 
 export default function InfoTab({ record, records = [], onOpen, onDuplicate, onChange, loadRecords }) {
   const [savedMsg, setSavedMsg] = useState('💾 Auto-save enabled');
-  const [redoModal, setRedoModal] = useState({ show: false, motor: null });
 
   const api = window.electronAPI;
 
@@ -13,49 +18,19 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
     setTimeout(() => setSavedMsg('💾 Auto-save enabled'), 1500);
   }, [onChange]);
 
-  // Filter records by client name to show motors under the same client
-  const clientNameFilter = record?.clientName || '';
-  const clientMotors = records.filter(r => 
-    clientNameFilter && r.clientName && 
-    r.clientName.trim().toLowerCase() === clientNameFilter.trim().toLowerCase()
-  );
-
-  const openRedoModal = (motor) => {
-    setRedoModal({ show: true, motor });
-  };
-
-  const closeRedoModal = () => {
-    setRedoModal({ show: false, motor: null });
-  };
-
-  const handleRedoConfirm = async (overwrite) => {
-    const motor = redoModal.motor;
-    if (!motor) return;
-
-    if (overwrite) {
-      // OVERWRITE: Clear existing test data and open
-      try {
-        await api.clearRecordTestData(motor.id);
-        if (loadRecords) await loadRecords();
-        onOpen(motor);
-      } catch (err) {
-        console.error('Failed to clear test data:', err);
-      }
-    } else {
-      // REPLICATE: Duplicate file with new test date
-      try {
-        const duplicated = await api.duplicateRecord(motor.id);
-        // Set new date to current date
-        const todayStr = new Date().toISOString().split('T')[0];
-        const updated = await api.updateRecord(duplicated.id, { ...duplicated, date: todayStr });
-        if (loadRecords) await loadRecords();
-        onOpen(updated);
-      } catch (err) {
-        console.error('Failed to duplicate for redo:', err);
-      }
-    }
-    closeRedoModal();
-  };
+  // ── Duplicate Motor Utility Tag detection (scoped to same client) ───────────
+  // Industry rule: two different clients CAN share the same tag (e.g. both have "AHU-01").
+  // Only flag when the SAME client already has a record with the same tag.
+  const duplicateTagRecord = useMemo(() => {
+    const tag    = (record?.motorUtilityTag || '').trim().toLowerCase();
+    const client = (record?.clientName      || '').trim().toLowerCase();
+    if (!tag || !client) return null;   // need both to make a meaningful comparison
+    return records.find(
+      r => r.id !== record?.id &&
+           (r.motorUtilityTag || '').trim().toLowerCase() === tag &&
+           (r.clientName      || '').trim().toLowerCase() === client
+    ) || null;
+  }, [record?.motorUtilityTag, record?.clientName, record?.id, records]);
 
   const inputStyle = {
     width: '100%',
@@ -113,20 +88,11 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
     gap: 8,
   };
 
-  const TreeLine = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: 20, margin: '2px 0' }}>
-      <div style={{ width: 3, background: '#3b82f6', flex: 1, borderRadius: 2 }}></div>
-    </div>
-  );
-
   return (
     <div style={{ padding: 16, height: 'calc(100vh - 112px)', overflowY: 'auto', boxSizing: 'border-box' }}>
       
-      {/* 2-Column Main Layout: Left = Hierarchy, Right = Motors List */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2.6fr 1.4fr', gap: 16, alignItems: 'stretch' }}>
-        
-        {/* LEFT COLUMN: The 4-Level Nested Hierarchy */}
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* Main Layout: Hierarchy */}
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
           
           {/* LEVEL 1: CLIENT INFORMATION */}
           <div style={columnCardStyle}>
@@ -304,9 +270,46 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
                   type="text"
                   value={record?.motorUtilityTag || ''}
                   onChange={e => handleFieldChange('motorUtilityTag', e.target.value)}
-                  style={inputStyle}
+                  style={{
+                    ...inputStyle,
+                    borderColor: duplicateTagRecord ? '#ef4444' : undefined,
+                    boxShadow:   duplicateTagRecord ? '0 0 0 2px rgba(239,68,68,0.15)' : undefined,
+                  }}
                   placeholder="e.g. 10DW12P001"
                 />
+                {duplicateTagRecord && (
+                  <div style={{
+                    marginTop: 4,
+                    background: '#fef2f2',
+                    border: '1px solid #fca5a5',
+                    borderRadius: 6,
+                    padding: '5px 8px',
+                    fontSize: 10,
+                    color: '#991b1b',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 6,
+                  }}>
+                    <span>
+                      ⚠️ Tag already used by{' '}
+                      <strong>{duplicateTagRecord.clientName || '(no client)'}</strong>
+                      {duplicateTagRecord.date ? ` on ${duplicateTagRecord.date}` : ''}
+                    </span>
+                    <button
+                      onClick={() => onOpen(duplicateTagRecord)}
+                      style={{
+                        background: '#fee2e2', border: '1px solid #fca5a5',
+                        borderRadius: 4, padding: '2px 6px', fontSize: 9,
+                        fontWeight: 700, color: '#b91c1c', cursor: 'pointer',
+                        whiteSpace: 'nowrap', flexShrink: 0,
+                      }}
+                    >
+                      Open Record
+                    </button>
+                  </div>
+                )}
               </div>
               <div>
                 <label style={labelStyle}>MOTOR SERIAL NUMBER</label>
@@ -644,176 +647,12 @@ export default function InfoTab({ record, records = [], onOpen, onDuplicate, onC
             </div>
           </div>
 
-        </div>
-
-        {/* RIGHT COLUMN: Motors List */}
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <div style={{ ...columnCardStyle, height: '100%' }}>
-            <h3 style={sectionHeaderStyle}>📋 Client Motors List</h3>
-            
-            <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 10px 0', lineHeight: 1.4 }}>
-              {clientNameFilter 
-                ? `Showing motors for Client: "${clientNameFilter}"` 
-                : "Enter a Client Name to filter motors."}
-            </p>
-
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid #f1f5f9', borderRadius: 8, padding: 8, background: '#fafafa' }}>
-              {clientMotors.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 10px', color: '#cbd5e1', fontSize: 12 }}>
-                  {clientNameFilter ? "No motor files found. Modify or duplicate this motor to expand the list." : "No client selected."}
-                </div>
-              ) : (
-                clientMotors.map(m => {
-                  const isActive = m.id === record?.id;
-                  return (
-                    <div
-                      key={m.id}
-                      style={{
-                        border: `1px solid ${isActive ? '#bfdbfe' : '#e2e8f0'}`,
-                        borderRadius: 8,
-                        padding: 10,
-                        background: isActive ? '#eff6ff' : '#fff',
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.01)',
-                        transition: 'all 0.15s',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                        <div>
-                          <p style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#1e40af' : '#1e293b', margin: 0 }}>
-                            {m.clientName || '(No Client)'}
-                            {m.motorUtilityTag ? <span style={{ color: isActive ? '#3b82f6' : '#475569' }}> — {m.motorUtilityTag}</span> : ''}
-                          </p>
-                          <p style={{ fontSize: 10, color: '#64748b', margin: '2px 0 0 0' }}>
-                            S/N: {m.motorSerialNumber || 'N/A'}
-                          </p>
-                        </div>
-                        <span style={{ fontSize: 9, color: '#94a3b8', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>
-                          {m.date || 'No Date'}
-                        </span>
-                      </div>
-
-                      {/* Action buttons inside the item */}
-                      <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
-                        {isActive ? (
-                          // Currently active record — show badge, no point opening it again
-                          <div style={{
-                            flex: 1, borderRadius: 4, background: '#1e40af',
-                            color: '#fff', fontSize: 10, padding: '4px 6px', fontWeight: 700,
-                            textAlign: 'center', letterSpacing: 0.3,
-                          }}>
-                            ✓ Currently Active
-                          </div>
-                        ) : (
-                          // Different motor — Open switches to it
-                          <button
-                            onClick={() => onOpen(m)}
-                            style={{
-                              flex: 1, border: 'none', borderRadius: 4, background: '#f1f5f9',
-                              color: '#475569', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600,
-                              transition: 'background 0.15s',
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.background = '#dbeafe'}
-                            onMouseLeave={e => e.currentTarget.style.background = '#f1f5f9'}
-                            title="Switch to this motor record"
-                          >
-                            👁️ Open
-                          </button>
-                        )}
-                        <button
-                          onClick={() => onDuplicate(m)}
-                          style={{
-                            flex: 1, border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff',
-                            color: '#475569', fontSize: 10, padding: '3px 6px', cursor: 'pointer', fontWeight: 600,
-                            transition: 'background 0.15s',
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                          onMouseLeave={e => e.currentTarget.style.background = '#fff'}
-                          title="Duplicate this motor record"
-                        >
-                          📋 Copy
-                        </button>
-                        <button
-                          onClick={() => openRedoModal(m)}
-                          style={{
-                            flex: 1, border: 'none', borderRadius: 4, background: '#fee2e2',
-                            color: '#b91c1c', fontSize: 10, padding: '4px 6px', cursor: 'pointer', fontWeight: 600,
-                            transition: 'background 0.15s',
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.background = '#fecaca'}
-                          onMouseLeave={e => e.currentTarget.style.background = '#fee2e2'}
-                          title="Re-do test on this motor"
-                        >
-                          🔄 Re-do
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-
       </div>
 
       {/* Auto-save status footer */}
       <div style={{ marginTop: 14, fontSize: 12, color: '#16a34a', fontWeight: 600, display: 'flex', justifyContent: 'flex-end' }}>
         {savedMsg}
       </div>
-
-      {/* OVERWRITE / REPLICATE MODAL DIALOG */}
-      {redoModal.show && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-          background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(4px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
-        }}>
-          <div style={{
-            background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0',
-            width: '450px', padding: '24px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)',
-            display: 'flex', flexDirection: 'column', gap: 16
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ fontSize: 32 }}>🔄</span>
-              <h4 style={{ fontSize: 16, fontWeight: 700, color: '#1e293b', margin: 0 }}>Re-do Motor Winding & Insulation Test</h4>
-            </div>
-
-            <p style={{ fontSize: 13, color: '#475569', margin: 0, lineHeight: 1.5 }}>
-              Do you want to overwrite this motor's test measurements, or duplicate this motor file with a new test date?
-            </p>
-
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button
-                onClick={() => handleRedoConfirm(true)}
-                style={{
-                  flex: 1, padding: '10px 14px', borderRadius: 8, border: 'none', background: '#dc2626',
-                  color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', transition: 'background 0.15s'
-                }}
-              >
-                Yes, Overwrite
-              </button>
-              <button
-                onClick={() => handleRedoConfirm(false)}
-                style={{
-                  flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff',
-                  color: '#334155', fontWeight: 700, fontSize: 12, cursor: 'pointer', transition: 'background 0.15s'
-                }}
-              >
-                No, Replicate
-              </button>
-              <button
-                onClick={closeRedoModal}
-                style={{
-                  padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#f8fafc',
-                  color: '#64748b', fontWeight: 600, fontSize: 12, cursor: 'pointer'
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );

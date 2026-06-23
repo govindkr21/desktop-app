@@ -17,7 +17,8 @@ class CopySerialPortPlugin {
         'debug',
         'ms',
         'node-addon-api',
-        'node-gyp-build'
+        'node-gyp-build',
+        'sql.js'
       ];
 
       packagesToCopy.forEach(pkg => {
@@ -36,6 +37,7 @@ module.exports = {
   entry: './src/main/index.js',
   externals: {
     serialport: 'commonjs serialport',
+    'sql.js': 'commonjs sql.js'
   },
   plugins: [
     new CopySerialPortPlugin(),

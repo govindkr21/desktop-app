@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearRecordTestData: (recordId)                      => ipcRenderer.invoke('db:clearRecordTestData', recordId),
 
   // ── Reports ──────────────────────────────────
-  exportExcel: (recordId) => ipcRenderer.invoke('report:exportExcel', recordId),
+  exportExcel: (recordId, chartImages) => ipcRenderer.invoke('report:exportExcel', recordId, chartImages),
   exportPDF:   (recordId) => ipcRenderer.invoke('report:exportPDF', recordId),
 
   // ── Shell ────────────────────────────────────
@@ -39,7 +39,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMeggerData:      (callback) => ipcRenderer.on('megger:data',      (_, row)   => callback(row)),
   onMeggerRaw:       (callback) => ipcRenderer.on('megger:raw',       (_, chunk) => callback(chunk)),
   onMeggerConnected: (callback) => ipcRenderer.on('megger:connected', ()         => callback()),
-  onMeggerStopped:   (callback) => ipcRenderer.on('megger:stopped',   ()         => callback()),
+  onMeggerStopped:   (callback) => ipcRenderer.on('megger:stopped',   (_, info)  => callback(info)),
   onMultimeterLive:  (callback) => ipcRenderer.on('multimeter:live',  (_, value) => callback(value)),
   onMultimeterRaw:   (callback) => ipcRenderer.on('multimeter:raw',   (_, chunk) => callback(chunk)),
   onMultimeterConnected: (callback) => ipcRenderer.on('multimeter:connected', ()         => callback()),
@@ -64,4 +64,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   disconnectMultimeter:  ()                   => ipcRenderer.invoke('serial:disconnectMultimeter'),
   sendMultimeterCommand: (mode, freq, secondary, equivalent) => ipcRenderer.invoke('serial:sendMultimeterCommand', { mode, freq, secondary, equivalent }),
+  relaunchApp:           ()                   => ipcRenderer.invoke('app:relaunch'),
 });

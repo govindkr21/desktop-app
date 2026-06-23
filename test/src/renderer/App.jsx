@@ -1,5 +1,5 @@
 // src/renderer/App.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import StartScreen          from './components/StartScreen';
 import InfoTab              from './components/InfoTab';
 import InsulationTab        from './components/InsulationTab';
@@ -18,7 +18,7 @@ export default function App() {
   const [activeTab,     setActiveTab]     = useState('info');
   const [record,        setRecord]        = useState(null);
   const [records,       setRecords]       = useState([]);
-  const [demoMode,      setDemoMode]      = useState(true);
+  const [demoMode,      setDemoMode]      = useState(false);
   const [showConnSetup, setShowConnSetup] = useState(false);
 
   // Background capture state — survives tab switches
@@ -31,6 +31,26 @@ export default function App() {
   const [meggerPort, setMeggerPort] = useState('');
   const [multimeterPort, setMultimeterPort] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
+
+  const saveTimeoutRef = useRef(null);
+  const latestRecordRef = useRef(record);
+
+  // Keep latestRecordRef in sync with record state
+  useEffect(() => {
+    latestRecordRef.current = record;
+  }, [record]);
+
+  // Flush any pending save on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        if (latestRecordRef.current) {
+          api.updateRecord(latestRecordRef.current.id, latestRecordRef.current);
+        }
+      }
+    };
+  }, []);
 
   // Set up listeners for physical device connection & errors
   useEffect(() => {
@@ -132,28 +152,58 @@ export default function App() {
   }
 
   function handleBack() {
-    loadRecords();
-    setScreen('start');
-    setRecord(null);
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+      api.updateRecord(latestRecordRef.current.id, latestRecordRef.current).then(() => {
+        loadRecords();
+        setScreen('start');
+        setRecord(null);
+      });
+    } else {
+      loadRecords();
+      setScreen('start');
+      setRecord(null);
+    }
   }
 
   // Tab click
   function handleTabClick(tabKey) {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+      api.updateRecord(latestRecordRef.current.id, latestRecordRef.current).then(() => {
+        loadRecords();
+      });
+    }
     setActiveTab(tabKey);
   }
 
   async function handleInfoChange(key, value) {
     if (!record) return;
     // Update local React state synchronously to prevent controlled inputs from lagging or losing focus
-    const updatedRecord = { ...record, [key]: value };
+    let updatedRecord;
+    if (typeof key === 'object' && key !== null) {
+      updatedRecord = { ...record, ...key };
+    } else {
+      updatedRecord = { ...record, [key]: value };
+    }
+    latestRecordRef.current = updatedRecord;
     setRecord(updatedRecord);
 
-    try {
-      await api.updateRecord(record.id, updatedRecord);
-      loadRecords();
-    } catch (err) {
-      console.error('Failed to update record in database:', err);
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
     }
+
+    saveTimeoutRef.current = setTimeout(async () => {
+      saveTimeoutRef.current = null;
+      try {
+        await api.updateRecord(latestRecordRef.current.id, latestRecordRef.current);
+        loadRecords();
+      } catch (err) {
+        console.error('Failed to update record in database:', err);
+      }
+    }, 500); // 500ms debounce delay
   }
 
   const TABS = [
@@ -226,6 +276,60 @@ export default function App() {
               <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 600 }}>Multimeter: {multimeterStatus}</span>
             </div>
 
+            {/* ── Demo / Real Mode Toggle ── */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 4 }}>
+              {/* Status pill */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                background: demoMode ? 'rgba(234,179,8,0.15)' : 'rgba(16,185,129,0.15)',
+                border: `1px solid ${demoMode ? '#ca8a04' : '#059669'}`,
+                borderRadius: 20,
+                padding: '2px 8px',
+              }}>
+                <span style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: '50%',
+                  background: demoMode ? '#eab308' : '#10b981',
+                  display: 'inline-block',
+                }}></span>
+                <span style={{ fontSize: 9, fontWeight: 700, color: demoMode ? '#fde047' : '#6ee7b7', letterSpacing: 0.5 }}>
+                  {demoMode ? 'DEMO' : 'REAL'}
+                </span>
+              </div>
+
+              {/* Toggle switch */}
+              <div
+                onClick={() => setDemoMode(prev => !prev)}
+                title={demoMode ? 'Switch to Real Device Mode' : 'Switch to Demo Mode'}
+                style={{
+                  width: 36,
+                  height: 20,
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  background: demoMode ? '#475569' : '#10b981',
+                  position: 'relative',
+                  transition: 'background 0.25s',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{
+                  position: 'absolute',
+                  top: 1,
+                  left: demoMode ? 1 : 17,
+                  width: 16,
+                  height: 16,
+                  borderRadius: '50%',
+                  background: '#fff',
+                  transition: 'left 0.25s',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                }}></div>
+              </div>
+            </div>
+
             {/* Connection setup trigger button */}
             <button
               onClick={() => setShowConnSetup(true)}
@@ -241,56 +345,34 @@ export default function App() {
             >
               🔌 Connection Setup
             </button>
+
+            {/* Restart/Refresh application button */}
+            <button
+              onClick={() => {
+                if (window.confirm('Are you sure you want to refresh/restart the application? This will disconnect any active serial ports.')) {
+                  api.relaunchApp();
+                }
+              }}
+              style={{
+                background: '#fff', color: '#2563eb', border: '1px solid #2563eb',
+                borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700,
+                cursor: 'pointer', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 4,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#eff6ff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = '#fff';
+              }}
+            >
+              🔄 Refresh
+            </button>
           </div>
         </div>
 
-        {/* ── Demo / Real Mode Toggle ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
 
-          {/* Status pill */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: demoMode ? 'rgba(234,179,8,0.15)' : 'rgba(16,185,129,0.15)',
-            border: `1px solid ${demoMode ? '#ca8a04' : '#059669'}`,
-            borderRadius: 20, padding: '3px 10px',
-          }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: demoMode ? '#eab308' : '#10b981',
-              display: 'inline-block',
-              boxShadow: demoMode ? '0 0 6px #eab308' : '0 0 6px #10b981',
-            }}></span>
-            <span style={{ fontSize: 11, fontWeight: 700, color: demoMode ? '#fde047' : '#6ee7b7', letterSpacing: 0.5 }}>
-              {demoMode ? 'DEMO MODE' : 'REAL DEVICE'}
-            </span>
-          </div>
-
-          {/* Toggle switch — simply flips mode, no modal */}
-          <div
-            onClick={() => setDemoMode(prev => !prev)}
-            title={demoMode ? 'Switch to Real Device Mode' : 'Switch to Demo Mode'}
-            style={{
-              width: 48, height: 26, borderRadius: 13, cursor: 'pointer',
-              background: demoMode ? '#475569' : '#10b981',
-              position: 'relative', transition: 'background 0.25s',
-              border: '2px solid rgba(255,255,255,0.15)',
-              flexShrink: 0,
-            }}
-          >
-            <div style={{
-              position: 'absolute', top: 2,
-              left: demoMode ? 2 : 22,
-              width: 18, height: 18, borderRadius: '50%',
-              background: '#fff',
-              transition: 'left 0.25s',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-            }}></div>
-          </div>
-
-          <span style={{ fontSize: 10, color: '#93c5fd', maxWidth: 80, lineHeight: 1.3, textAlign: 'right' }}>
-            {demoMode ? 'Using simulator' : 'USB/COM port'}
-          </span>
-        </div>
       </div>
 
       {/* ── Tab Bar ── */}
@@ -328,16 +410,18 @@ export default function App() {
 
       {/* ── Content — always mounted, CSS hidden to preserve background capture state ── */}
       <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-        <div style={{ display: activeTab === 'info' ? 'block' : 'none', height: '100%' }}>
-          <InfoTab
-            record={record}
-            records={records}
-            onOpen={handleOpen}
-            onDuplicate={handleDuplicate}
-            onChange={handleInfoChange}
-            loadRecords={loadRecords}
-          />
-        </div>
+        {activeTab === 'info' && (
+          <div style={{ height: '100%' }}>
+            <InfoTab
+              record={record}
+              records={records}
+              onOpen={handleOpen}
+              onDuplicate={handleDuplicate}
+              onChange={handleInfoChange}
+              loadRecords={loadRecords}
+            />
+          </div>
+        )}
         <div style={{ display: activeTab === 'insulation' ? 'block' : 'none', height: '100%' }}>
           <InsulationTab
             record={record}
@@ -346,6 +430,7 @@ export default function App() {
             setMeggerStatus={setMeggerStatus}
             onChange={handleInfoChange}
             onCaptureChange={setInsulationCapturing}
+            visible={activeTab === 'insulation'}
           />
         </div>
         <div style={{ display: activeTab === 'multimeter' ? 'block' : 'none', height: '100%' }}>
@@ -356,11 +441,14 @@ export default function App() {
             setMultimeterStatus={setMultimeterStatus}
             onChange={handleInfoChange}
             onCaptureChange={setMultimeterCapturing}
+            visible={activeTab === 'multimeter'}
           />
         </div>
-        <div style={{ display: activeTab === 'report' ? 'block' : 'none', height: '100%' }}>
-          <ReportScreen record={record} onChange={handleInfoChange} />
-        </div>
+        {activeTab === 'report' && (
+          <div style={{ height: '100%' }}>
+            <ReportScreen record={record} onChange={handleInfoChange} />
+          </div>
+        )}
       </div>
 
     </div>
