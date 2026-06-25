@@ -29,6 +29,14 @@ class CopySerialPortPlugin {
           fs.cpSync(src, dest, { recursive: true, dereference: true });
         }
       });
+
+      // Copy src/assets folder to output folder for portable assets (logo, icons, etc.)
+      const srcAssets = path.resolve(__dirname, 'src', 'assets');
+      const destAssets = path.join(outputPath, 'src', 'assets');
+      if (fs.existsSync(srcAssets)) {
+        console.log('[Webpack Plugin] Copying assets folder to output...');
+        fs.cpSync(srcAssets, destAssets, { recursive: true, dereference: true });
+      }
     });
   }
 }

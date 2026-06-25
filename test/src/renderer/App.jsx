@@ -276,59 +276,7 @@ export default function App() {
               <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 600 }}>Multimeter: {multimeterStatus}</span>
             </div>
 
-            {/* ── Demo / Real Mode Toggle ── */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 4 }}>
-              {/* Status pill */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                background: demoMode ? 'rgba(234,179,8,0.15)' : 'rgba(16,185,129,0.15)',
-                border: `1px solid ${demoMode ? '#ca8a04' : '#059669'}`,
-                borderRadius: 20,
-                padding: '2px 8px',
-              }}>
-                <span style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: '50%',
-                  background: demoMode ? '#eab308' : '#10b981',
-                  display: 'inline-block',
-                }}></span>
-                <span style={{ fontSize: 9, fontWeight: 700, color: demoMode ? '#fde047' : '#6ee7b7', letterSpacing: 0.5 }}>
-                  {demoMode ? 'DEMO' : 'REAL'}
-                </span>
-              </div>
 
-              {/* Toggle switch */}
-              <div
-                onClick={() => setDemoMode(prev => !prev)}
-                title={demoMode ? 'Switch to Real Device Mode' : 'Switch to Demo Mode'}
-                style={{
-                  width: 36,
-                  height: 20,
-                  borderRadius: 10,
-                  cursor: 'pointer',
-                  background: demoMode ? '#475569' : '#10b981',
-                  position: 'relative',
-                  transition: 'background 0.25s',
-                  border: '1px solid rgba(255,255,255,0.15)',
-                  flexShrink: 0,
-                }}
-              >
-                <div style={{
-                  position: 'absolute',
-                  top: 1,
-                  left: demoMode ? 1 : 17,
-                  width: 16,
-                  height: 16,
-                  borderRadius: '50%',
-                  background: '#fff',
-                  transition: 'left 0.25s',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                }}></div>
-              </div>
-            </div>
 
             {/* Connection setup trigger button */}
             <button

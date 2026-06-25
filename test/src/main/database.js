@@ -122,9 +122,33 @@ async function init() {
         correctInsulationTo40 INTEGER,
         temperature TEXT,
         notes TEXT,
-        createdAt TEXT
+        createdAt TEXT,
+        condInsulation TEXT,
+        condResistance TEXT,
+        condInductance TEXT,
+        condImpedance TEXT,
+        condFrequency TEXT,
+        summaryText TEXT
       )
     `);
+
+    // Ensure new columns exist in case the table was already created
+    const newCols = [
+      ['condInsulation', 'TEXT'],
+      ['condResistance', 'TEXT'],
+      ['condInductance', 'TEXT'],
+      ['condImpedance', 'TEXT'],
+      ['condFrequency', 'TEXT'],
+      ['summaryText', 'TEXT'],
+      ['customLogoPath', 'TEXT']
+    ];
+    newCols.forEach(([col, type]) => {
+      try {
+        runSql(`ALTER TABLE records ADD COLUMN ${col} ${type}`);
+      } catch (err) {
+        // Column already exists
+      }
+    });
 
     runSql(`
       CREATE TABLE IF NOT EXISTS insulation_tests (
@@ -330,9 +354,10 @@ function createRecord(d) {
       nominalCurrent, statorConnection, rotorConnection, rotorVoltage, rotorCurrent,
       efficiency, insulationClass, rotorBars, remark, testingLocation, wireMarkingT1,
       wireMarkingT2, wireMarkingT3, testVoltagePiDar, testVoltageStep, testVoltageRamp,
-      correctWindingTo20, correctInsulationTo40, temperature, notes, createdAt
+      correctWindingTo20, correctInsulationTo40, temperature, notes, createdAt,
+      condInsulation, condResistance, condInductance, condImpedance, condFrequency, summaryText, customLogoPath
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `;
   runSql(insertRecordSql, [
@@ -344,7 +369,8 @@ function createRecord(d) {
     d.nominalCurrent || '', d.statorConnection || 'Star', d.rotorConnection || 'Star', d.rotorVoltage || '', d.rotorCurrent || '',
     d.efficiency || '', d.insulationClass || 'A', d.rotorBars || '', d.remark || '', d.testingLocation || 'Motor Junction Box', d.wireMarkingT1 || '',
     d.wireMarkingT2 || '', d.wireMarkingT3 || '', d.testVoltagePiDar || '500V', d.testVoltageStep || '', d.testVoltageRamp || '',
-    d.correctWindingTo20 ? 1 : 0, d.correctInsulationTo40 ? 1 : 0, d.temperature || '', d.notes || '', new Date().toISOString()
+    d.correctWindingTo20 ? 1 : 0, d.correctInsulationTo40 ? 1 : 0, d.temperature || '', d.notes || '', new Date().toISOString(),
+    d.condInsulation || '', d.condResistance || '', d.condInductance || '', d.condImpedance || '', d.condFrequency || '', d.summaryText || '', d.customLogoPath || ''
   ]);
   saveSync();
   return getRecord(id);
@@ -449,11 +475,11 @@ function getInsulationData(recordId) {
     if (!result[t.tab]) result[t.tab] = {};
     if (!result[t.tab][t.tableId]) result[t.tab][t.tableId] = [];
     result[t.tab][t.tableId].push({
-      time: t.time,
-      voltage: t.voltage,
-      actualVoltage: t.actualVoltage,
-      current: t.current,
-      resistance: Number(t.resistance)
+      time: Number(t.time),
+      voltage: t.voltage !== null && t.voltage !== undefined && t.voltage !== '' && !isNaN(Number(t.voltage)) ? Number(t.voltage) : t.voltage,
+      actualVoltage: t.actualVoltage !== null && t.actualVoltage !== undefined && t.actualVoltage !== '' && !isNaN(Number(t.actualVoltage)) ? Number(t.actualVoltage) : t.actualVoltage,
+      current: t.current !== null && t.current !== undefined && t.current !== '' && !isNaN(Number(t.current)) ? Number(t.current) : null,
+      resistance: t.resistance !== null && t.resistance !== undefined && t.resistance !== '' ? Number(t.resistance) : null
     });
   }
 

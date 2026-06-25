@@ -160,6 +160,7 @@ ipcMain.handle('report:exportExcel', async (_, recordId, chartImages) => {
   try {
     return await reports.exportExcel(recordId, mainWindow, chartImages);
   } catch (err) {
+    console.error('Export Excel failed:', err);
     return { success: false, error: err.message };
   }
 });
@@ -168,6 +169,7 @@ ipcMain.handle('report:exportPDF', async (_, recordId) => {
   try {
     return await reports.exportPDF(recordId, mainWindow);
   } catch (err) {
+    console.error('Export PDF failed:', err);
     return { success: false, error: err.message };
   }
 });
@@ -198,8 +200,14 @@ ipcMain.handle('app:relaunch', () => {
     serial.disconnectMultimeter();
   } catch (_) {}
   safeFlush('relaunch');
-  app.relaunch();
-  app.exit(0);
+  if (app.isPackaged) {
+    app.relaunch();
+    app.exit(0);
+  } else {
+    if (mainWindow) {
+      mainWindow.webContents.reload();
+    }
+  }
 });
 
 ipcMain.handle('serial:listPorts', async () => {

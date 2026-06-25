@@ -23,6 +23,9 @@ const IND_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 const CAP_KEYS = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
 const IMP_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 
+const L_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+const R_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+
 // ── Styles shared across the component ──────────────────
 const S = {
   sectionBox: {
@@ -101,8 +104,7 @@ function MeasGroup({
   const isImp = prefix.includes('_imp');
   const isRes = prefix.includes('_res');
   const isResAcSweep = isRes && currentMode === 'R';
-  const L_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-  const R_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+
 
   const isActive = (prefix.includes('_res') && (currentMode === 'DCR' || currentMode === 'R')) ||
                    (prefix.includes('_ind') && currentMode === 'L') ||
@@ -1208,10 +1210,16 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     return (maxDev / avg) * 100;
   }
 
+  const currentLImbFreq = (L_FREQS.includes(freq) ? freq : '100Hz');
   const statorResImb = calculateImbalance(captured['stator_res_1-2'], captured['stator_res_1-3'], captured['stator_res_2-3']);
-  const statorIndImb = calculateImbalance(captured['stator_ind_1-2'], captured['stator_ind_1-3'], captured['stator_ind_2-3']);
+  const statorIndImb = calculateImbalance(captured[`stator_ind_1-2_${currentLImbFreq}`], captured[`stator_ind_1-3_${currentLImbFreq}`], captured[`stator_ind_2-3_${currentLImbFreq}`]);
+  const statorCapImb = calculateImbalance(captured['stator_cap_1-2'], captured['stator_cap_1-3'], captured['stator_cap_2-3']) || calculateImbalance(captured['stator_cap_1-GND'], captured['stator_cap_2-GND'], captured['stator_cap_3-GND']);
+  const statorImpImb = calculateImbalance(captured['stator_imp_1-2_z'], captured['stator_imp_1-3_z'], captured['stator_imp_2-3_z']);
+
   const rotorResImb = calculateImbalance(captured['rotor_res_1-2'], captured['rotor_res_1-3'], captured['rotor_res_2-3']);
-  const rotorIndImb = calculateImbalance(captured['rotor_ind_1-2'], captured['rotor_ind_1-3'], captured['rotor_ind_2-3']);
+  const rotorIndImb = calculateImbalance(captured[`rotor_ind_1-2_${currentLImbFreq}`], captured[`rotor_ind_1-3_${currentLImbFreq}`], captured[`rotor_ind_2-3_${currentLImbFreq}`]);
+  const rotorCapImb = calculateImbalance(captured['rotor_cap_1-2'], captured['rotor_cap_1-3'], captured['rotor_cap_2-3']) || calculateImbalance(captured['rotor_cap_1-GND'], captured['rotor_cap_2-GND'], captured['rotor_cap_3-GND']);
+  const rotorImpImb = calculateImbalance(captured['rotor_imp_1-2_z'], captured['rotor_imp_1-3_z'], captured['rotor_imp_2-3_z']);
 
   function renderImbalanceChip(imb, label) {
     const isPending = imb === null;
@@ -1224,24 +1232,24 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     return (
       <div style={{
         background: bgColor, border: `1px solid ${borderColor}`,
-        borderRadius: 7, padding: '4px 8px',
+        borderRadius: 5, padding: '3px 6px',
         display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
-          <span style={{ fontSize: 8.5, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{label}</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, fontWeight: 800, color: isPending ? '#cbd5e1' : color, fontFamily: 'monospace' }}>
-              {isPending ? '—' : `${imb.toFixed(2)}%`}
+          <span style={{ fontSize: 8, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{label}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+            <span style={{ fontSize: 9.5, fontWeight: 800, color: isPending ? '#cbd5e1' : color, fontFamily: 'monospace' }}>
+              {isPending ? '—' : `${imb.toFixed(1)}%`}
             </span>
             <span style={{
-              fontSize: 7, fontWeight: 800, color: '#fff',
-              background: color, borderRadius: 3, padding: '1px 3px',
+              fontSize: 6.5, fontWeight: 800, color: '#fff',
+              background: color, borderRadius: 2, padding: '1px 2px',
               lineHeight: 1,
             }}>{statusText}</span>
           </div>
         </div>
-        <div style={{ height: 3, background: '#e2e8f0', borderRadius: 2, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2, transition: 'width 0.4s ease' }} />
+        <div style={{ height: 2, background: '#e2e8f0', borderRadius: 1, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 1, transition: 'width 0.4s ease' }} />
         </div>
       </div>
     );
@@ -1757,7 +1765,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, borderBottom: '1px solid #f1f5f9', paddingBottom: 3, width: '100%', flexShrink: 0 }}>
             <span style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', letterSpacing: 0.4 }}>📊 Phase Balance</span>
-            <span style={{ fontSize: 12, color: '#94a3b8' }}>R & L imbalance</span>
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>R, L, C, Z imbalance</span>
           </div>
 
           {/* Stator & Rotor columns side by side */}
@@ -1768,8 +1776,12 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#1e3a8a' }} />
                 <span style={{ fontSize: 8, fontWeight: 800, color: '#1e3a8a', letterSpacing: 0.5 }}>STA</span>
               </div>
-              {renderImbalanceChip(statorResImb, 'R Resistance')}
-              {renderImbalanceChip(statorIndImb, 'L Inductance')}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                {renderImbalanceChip(statorResImb, 'R Res')}
+                {renderImbalanceChip(statorIndImb, 'L Ind')}
+                {renderImbalanceChip(statorCapImb, 'C Cap')}
+                {renderImbalanceChip(statorImpImb, 'Z Imp')}
+              </div>
             </div>
 
             {/* Separator line between Stator & Rotor */}
@@ -1781,8 +1793,12 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#991b1b' }} />
                 <span style={{ fontSize: 8, fontWeight: 800, color: '#991b1b', letterSpacing: 0.5 }}>ROT</span>
               </div>
-              {renderImbalanceChip(rotorResImb, 'R Resistance')}
-              {renderImbalanceChip(rotorIndImb, 'L Inductance')}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                {renderImbalanceChip(rotorResImb, 'R Res')}
+                {renderImbalanceChip(rotorIndImb, 'L Ind')}
+                {renderImbalanceChip(rotorCapImb, 'C Cap')}
+                {renderImbalanceChip(rotorImpImb, 'Z Imp')}
+              </div>
             </div>
           </div>
         </div>

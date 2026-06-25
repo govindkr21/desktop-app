@@ -1,7 +1,128 @@
 // src/renderer/components/ReportScreen.jsx
-import { useState, useEffect } from 'react';
-import { LineChart, Line, ReferenceArea, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useState, useEffect, useRef } from 'react';
+import { LineChart, Line, ReferenceArea, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Label } from 'recharts';
 import logo from '../../assets/logo.png';
+
+const splitSVData = (rows) => {
+  if (!rows || rows.length === 0) return { transientRows: [], summaryRows: [] };
+  let splitIndex = -1;
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i].time) <= Number(rows[i - 1].time)) {
+      splitIndex = i;
+      break;
+    }
+  }
+
+  let transientRows = rows;
+  let summaryRows = [];
+
+  if (splitIndex !== -1) {
+    transientRows = rows.slice(0, splitIndex);
+    summaryRows = rows.slice(splitIndex);
+    summaryRows.sort((a, b) => Number(a.time) - Number(b.time));
+  } else {
+    // Dynamically extract summary rows at t = 60, 120, 180, 240, 300 from transient rows
+    const targetTimes = [60, 120, 180, 240, 300];
+    summaryRows = targetTimes.map(t => rows.find(r => Number(r.time) === t)).filter(Boolean);
+  }
+
+  return { transientRows, summaryRows };
+};
+
+const PolarPlot = ({ data, size = 180 }) => {
+  const centerX = size / 2;
+  const centerY = size / 2 + 10;
+  const maxR = size / 2 - 25;
+
+  const validPoints = data.filter(d => d.z !== null && d.z !== undefined && !isNaN(d.z));
+  const maxZ = Math.max(...validPoints.map(d => d.z)) * 1.15 || 10;
+
+  const phaseColors = {
+    '1-2': '#E11D48',
+    '1-3': '#10B981',
+    '2-3': '#D97706',
+    '1-N': '#7C3AED',
+    '2-N': '#06B6D4',
+    '3-N': '#EC4899',
+  };
+
+  return (
+    <svg width={size} height={size} style={{ background: '#f8fafc', borderRadius: 8, border: '1px solid #cbd5e1' }}>
+      {/* Title */}
+      <text x={centerX} y="15" fontSize="9" fontWeight="bold" fill="#1e3a8a" textAnchor="middle">
+        Impedance Polar Plot
+      </text>
+
+      {/* Grid circles */}
+      <circle cx={centerX} cy={centerY} r={maxR * 0.33} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+      <circle cx={centerX} cy={centerY} r={maxR * 0.66} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+      <circle cx={centerX} cy={centerY} r={maxR} fill="none" stroke="#94a3b8" strokeWidth="0.5" />
+
+      {/* Axis lines */}
+      {[0, 45, 90, 135, 180, 225, 270, 315].map(angle => {
+        const rad = (angle * Math.PI) / 180;
+        const endX = centerX + maxR * Math.cos(rad);
+        const endY = centerY - maxR * Math.sin(rad);
+        return (
+          <line
+            key={angle}
+            x1={centerX}
+            y1={centerY}
+            x2={endX}
+            y2={endY}
+            stroke="#94a3b8"
+            strokeWidth="0.5"
+            strokeDasharray="2 2"
+          />
+        );
+      })}
+
+      {/* Angle Labels */}
+      {[0, 90, 180, 270].map(angle => {
+        const rad = (angle * Math.PI) / 180;
+        const endX = centerX + (maxR + 10) * Math.cos(rad);
+        const endY = centerY - (maxR + 10) * Math.sin(rad);
+        return (
+          <text
+            key={angle}
+            x={endX}
+            y={endY}
+            fontSize="6.5"
+            fontWeight="bold"
+            fill="#64748b"
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
+            {angle}°
+          </text>
+        );
+      })}
+
+      {/* Plot points */}
+      {validPoints.map(pt => {
+        const r = (pt.z / maxZ) * maxR;
+        const rad = (pt.deg * Math.PI) / 180;
+        const px = centerX + r * Math.cos(rad);
+        const py = centerY - r * Math.sin(rad);
+        const color = phaseColors[pt.phase] || '#64748b';
+        return (
+          <g key={pt.phase}>
+            <circle cx={px} cy={py} r="3.5" fill={color} />
+            <text
+              x={px + 5}
+              y={py - 3}
+              fontSize="7"
+              fontWeight="bold"
+              fill={color}
+            >
+              {pt.phase}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
 
 const api = window.electronAPI;
 
@@ -47,6 +168,16 @@ const formatResistance = (mOhms) => {
   return `${val.toFixed(2)} MΩ`;
 };
 
+const formatStepVoltage = (str) => {
+  if (!str || str === '—') return '—';
+  const parts = str.split(/[\/,]/);
+  const lastPart = parts[parts.length - 1].trim();
+  if (/^\d+$/.test(lastPart)) {
+    return `${lastPart}V`;
+  }
+  return lastPart;
+};
+
 const getPassStatus = (Rc40) => {
   if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b', bg: '#f1f5f9' };
   if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7' };
@@ -60,12 +191,74 @@ export default function ReportScreen({ record, onChange }) {
   const [exporting, setExporting] = useState('');
   const [message, setMessage] = useState(null);
   const [lastFilePath, setLastFilePath] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!record) return;
     api.getInsulationData(record.id).then(d => setInsData(d || {}));
     api.getMultimeterData(record.id).then(d => setMulData(d || {}));
   }, [record?.id]);
+
+  const handleLogoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Downscale large logos to a max dimension of 400px to keep SQLite payload small
+          const maxDim = 400;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const base64Data = canvas.toDataURL('image/png');
+          onChange('customLogoPath', base64Data);
+
+          // Save directly to DB immediately to avoid race conditions during export
+          await api.updateRecord(record.id, { customLogoPath: base64Data });
+        } catch (err) {
+          console.error('Failed to process custom logo image:', err);
+        }
+      };
+      img.onerror = () => {
+        console.error('Failed to load selected custom logo image.');
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleLogoRemove = async () => {
+    onChange('customLogoPath', '');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    
+    // Save update to DB immediately
+    try {
+      await api.updateRecord(record.id, { customLogoPath: '' });
+    } catch (err) {
+      console.error('Failed to clear custom logo in database:', err);
+    }
+  };
 
   const svgToPng = (svgElement) => {
     return new Promise((resolve, reject) => {
@@ -78,9 +271,8 @@ export default function ReportScreen({ record, onChange }) {
         clonedSvg.setAttribute('height', height);
         
         const svgString = new XMLSerializer().serializeToString(clonedSvg);
-        const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-        const URL = window.URL || window.webkitURL || window;
-        const blobURL = URL.createObjectURL(svgBlob);
+        const base64Svg = window.btoa(unescape(encodeURIComponent(svgString)));
+        const dataURL = `data:image/svg+xml;base64,${base64Svg}`;
         
         const image = new Image();
         image.onload = () => {
@@ -92,14 +284,12 @@ export default function ReportScreen({ record, onChange }) {
           context.fillRect(0, 0, width, height);
           context.drawImage(image, 0, 0);
           const png = canvas.toDataURL('image/png');
-          URL.revokeObjectURL(blobURL);
           resolve(png);
         };
         image.onerror = (err) => {
-          URL.revokeObjectURL(blobURL);
           reject(err);
         };
-        image.src = blobURL;
+        image.src = dataURL;
       } catch (e) {
         reject(e);
       }
@@ -117,6 +307,28 @@ export default function ReportScreen({ record, onChange }) {
       console.error(`Failed to convert svg for ${id} to png`, e);
       return null;
     }
+  };
+
+  const getFriendlyErrorMessage = (error) => {
+    if (!error) return 'An unknown error occurred.';
+    const msg = typeof error === 'string' ? error : (error.message || String(error));
+    
+    if (msg.includes('EBUSY') || msg.includes('resource busy or locked') || msg.includes('locked')) {
+      return 'The report file is currently open in another application (such as Microsoft Excel or a PDF viewer). Please close the file and try again.';
+    }
+    if (msg.includes('EACCES') || msg.includes('permission denied') || msg.includes('EPERM')) {
+      return 'Permission denied. The application does not have permission to write to this folder. Please choose a different location or check folder permissions.';
+    }
+    if (msg.includes('ENOENT') || msg.includes('no such file or directory')) {
+      return 'The destination folder could not be found. Please choose a different save location.';
+    }
+    if (msg.includes('ENOSPC') || msg.includes('no space left on device')) {
+      return 'Out of storage space. Please free up some disk space and try again.';
+    }
+    if (msg.includes('MAX_TABLE_ROWS is not defined') || msg.includes('ReferenceError') || msg.includes('TypeError')) {
+      return `An internal application error occurred: ${msg}. Please report this to the development team.`;
+    }
+    return msg;
   };
 
   const handleExport = async (type) => {
@@ -151,9 +363,19 @@ export default function ReportScreen({ record, onChange }) {
           }
         }
 
+        // Grab polar chart images
+        const polarImages = {};
+        for (const group of ['stator', 'rotor']) {
+          const base64 = await grabChartBase64(`chart-polar-${group}`);
+          if (base64) {
+            polarImages[group] = base64;
+          }
+        }
+
         const chartImages = {
           sweep: sweepImages,
-          insulation: insImages
+          insulation: insImages,
+          polar: polarImages
         };
         result = await api.exportExcel(record.id, chartImages);
       } else {
@@ -166,10 +388,10 @@ export default function ReportScreen({ record, onChange }) {
       } else if (result.reason === 'cancelled') {
         setMessage({ type: 'info', text: 'Export cancelled.' });
       } else {
-        setMessage({ type: 'error', text: `❌ Export failed: ${result.error}` });
+        setMessage({ type: 'error', text: `❌ Export failed: ${getFriendlyErrorMessage(result.error)}` });
       }
     } catch (err) {
-      setMessage({ type: 'error', text: `❌ Error: ${err.message}` });
+      setMessage({ type: 'error', text: `❌ Error: ${getFriendlyErrorMessage(err)}` });
     }
     setExporting('');
   };
@@ -200,16 +422,19 @@ export default function ReportScreen({ record, onChange }) {
     const activeTableKeys = Object.keys(tabData).filter(k => !k.endsWith('_meta') && Array.isArray(tabData[k]) && tabData[k].length > 0);
     if (activeTableKeys.length === 0) return null;
     
-    const voltages = new Set();
+    let maxV = 0;
     activeTableKeys.forEach(tableId => {
       const rows = tabData[tableId];
       rows.forEach(r => {
         if (r.voltage !== undefined && r.voltage !== null && r.voltage !== '') {
-          voltages.add(`${r.voltage}V`);
+          const num = parseFloat(r.voltage);
+          if (!isNaN(num) && num > maxV) {
+            maxV = num;
+          }
         }
       });
     });
-    return voltages.size > 0 ? Array.from(voltages).join(' / ') : null;
+    return maxV > 0 ? `${maxV}V` : null;
   };
 
   const getRampNominalVoltages = () => {
@@ -241,7 +466,7 @@ export default function ReportScreen({ record, onChange }) {
 
   const piVolts = getNominalVoltage('PI') || record?.testVoltagePiDar || '—';
   const darVolts = getNominalVoltage('DAR') || record?.testVoltagePiDar || '—';
-  const stepVolts = getSVNominalVoltages() || record?.testVoltageStep || '—';
+  const stepVolts = formatStepVoltage(getSVNominalVoltages() || record?.testVoltageStep);
   const rampVolts = getRampNominalVoltages() || record?.testVoltageRamp || '—';
 
   // Check if any insulation tables have data
@@ -257,10 +482,15 @@ export default function ReportScreen({ record, onChange }) {
                  :                               { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8' };
 
   // Winding Imbalances at card group level
-  const statorResImb = calculateImbalance(mulData?.stator_res_1-2?.value, mulData?.stator_res_1-3?.value, mulData?.stator_res_2-3?.value);
-  const statorIndImb = calculateImbalance(mulData?.stator_ind_1-2?.value, mulData?.stator_ind_1-3?.value, mulData?.stator_ind_2-3?.value);
-  const rotorResImb = calculateImbalance(mulData?.rotor_res_1-2?.value, mulData?.rotor_res_1-3?.value, mulData?.rotor_res_2-3?.value);
-  const rotorIndImb = calculateImbalance(mulData?.rotor_ind_1-2?.value, mulData?.rotor_ind_1-3?.value, mulData?.rotor_ind_2-3?.value);
+  const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
+  const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
+  const statorCapImb = calculateImbalance(mulData?.['stator_cap_1-2']?.value, mulData?.['stator_cap_1-3']?.value, mulData?.['stator_cap_2-3']?.value) || calculateImbalance(mulData?.['stator_cap_1-GND']?.value, mulData?.['stator_cap_2-GND']?.value, mulData?.['stator_cap_3-GND']?.value);
+  const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
+
+  const rotorResImb = calculateImbalance(mulData?.['rotor_res_1-2']?.value, mulData?.['rotor_res_1-3']?.value, mulData?.['rotor_res_2-3']?.value);
+  const rotorIndImb = calculateImbalance(mulData?.['rotor_ind_1-2_100Hz']?.value, mulData?.['rotor_ind_1-3_100Hz']?.value, mulData?.['rotor_ind_2-3_100Hz']?.value);
+  const rotorCapImb = calculateImbalance(mulData?.['rotor_cap_1-2']?.value, mulData?.['rotor_cap_1-3']?.value, mulData?.['rotor_cap_2-3']?.value) || calculateImbalance(mulData?.['rotor_cap_1-GND']?.value, mulData?.['rotor_cap_2-GND']?.value, mulData?.['rotor_cap_3-GND']?.value);
+  const rotorImpImb = calculateImbalance(mulData?.['rotor_imp_1-2_z']?.value, mulData?.['rotor_imp_1-3_z']?.value, mulData?.['rotor_imp_2-3_z']?.value);
 
   const hasLStatorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`stator_ind_${p}_${f}`]?.value !== undefined));
   const hasLRotorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`rotor_ind_${p}_${f}`]?.value !== undefined));
@@ -384,11 +614,21 @@ export default function ReportScreen({ record, onChange }) {
                     y2={0}
                     fill="#FEF08A"
                     fillOpacity={0.7}
-                    label={{ value: "Capacitive Regime", position: "insideBottomLeft", fill: "#A16207", fontSize: 8, fontWeight: 700 }}
+                  />
+                )}
+                {minAreaY < 0 && (
+                  <Line
+                    type="monotone"
+                    dataKey="capacitiveDominanceDummy"
+                    name="Capacitive dominance"
+                    stroke="#FEF08A"
+                    strokeWidth={0}
+                    dot={false}
+                    activeDot={false}
                   />
                 )}
                 <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4, border: '1px solid #cbd5e1', background: '#fff' }} />
-                <Legend wrapperStyle={{ fontSize: 8, fontWeight: 700, fill: '#475569' }} />
+                <Legend verticalAlign="bottom" height={28} iconSize={8} iconType="circle" wrapperStyle={{ fontSize: 8, fontWeight: 700, fill: '#475569', paddingTop: 8 }} />
                 {tablePhases.map(phase => {
                   const hasLineData = chartData.some(d => d[phase] !== undefined);
                   if (!hasLineData) return null;
@@ -528,13 +768,241 @@ export default function ReportScreen({ record, onChange }) {
         </span>
       </div>
 
+      {/* Test Summary & Condition Overrides Panel */}
+      <div style={{
+        background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
+        padding: '16px', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 12,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', display: 'flex', alignItems: 'center', gap: 6 }}>
+          📋 REPORT TEST SUMMARY & CONDITION ASSESSMENT:
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 2fr', gap: 16 }}>
+          {/* Summary notes */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 10, fontWeight: 700, color: '#475569' }}>Test Summary Report Notes:</label>
+            <textarea
+              value={record?.summaryText || ''}
+              onChange={e => onChange('summaryText', e.target.value)}
+              placeholder="Write overall test summary comments and recommendations here..."
+              style={{
+                fontSize: 11, padding: 8, borderRadius: 6, border: '1px solid #cbd5e1',
+                height: 200, resize: 'vertical', fontFamily: 'inherit'
+              }}
+            />
+          </div>
+          {/* Dropdowns */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            {[
+              { key: 'condInsulation', label: 'Insulation' },
+              { key: 'condResistance', label: 'Resistance' },
+              { key: 'condInductance', label: 'Inductance' },
+              { key: 'condImpedance', label: 'Impedance' },
+              { key: 'condFrequency', label: 'Freq. Response' }
+            ].map(c => {
+              // Calculate default automatic value if not manually set
+              let autoVal = '—';
+              if (c.key === 'condInsulation') {
+                const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
+                if (hasIns) {
+                  let overallPass = 'Pass (Excellent)';
+                  Object.keys(insData).forEach(tab => {
+                    const tabData = insData[tab] || {};
+                    const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
+                    activeTables.forEach(tableId => {
+                      const rows = tabData[tableId];
+                      const runMeta = tabData[`${tableId}_meta`] || {};
+                      const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record?.temperature || 25);
+                      const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                      const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
+                      const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
+                      const status = getPassStatus(record?.correctInsulationTo40 ? Rc40 : Rt);
+                      if (status.text.includes('Fail')) overallPass = 'Fail';
+                      else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
+                    });
+                  });
+                  autoVal = overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+                }
+              } else if (c.key === 'condResistance') {
+                if (statorResImb !== null) {
+                  autoVal = statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm');
+                }
+              } else if (c.key === 'condInductance') {
+                if (statorIndImb !== null) {
+                  autoVal = statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm');
+                }
+              } else if (c.key === 'condImpedance') {
+                if (statorImpImb !== null) {
+                  autoVal = statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+                } else {
+                  const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+                  if (hasImp) autoVal = 'Normal';
+                }
+              } else if (c.key === 'condFrequency') {
+                let maxSwImb = 0;
+                ['ind', 'res'].forEach(t => {
+                  ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
+                    const v12 = mulData[`stator_${t}_1-2_${f}`]?.value;
+                    const v13 = mulData[`stator_${t}_1-3_${f}`]?.value;
+                    const v23 = mulData[`stator_${t}_2-3_${f}`]?.value;
+                    const imb = calculateImbalance(v12, v13, v23);
+                    if (imb !== null && imb > maxSwImb) maxSwImb = imb;
+                  });
+                });
+                if (maxSwImb > 0) {
+                  autoVal = maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm');
+                }
+              }
+
+              const currentVal = record?.[c.key] || '';
+              const displayVal = currentVal || autoVal;
+
+              return (
+                <div key={c.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <label style={{ fontSize: 9, fontWeight: 700, color: '#64748b' }}>{c.label}:</label>
+                  <select
+                    value={currentVal}
+                    onChange={e => onChange(c.key, e.target.value)}
+                    style={{
+                      fontSize: 10, padding: '4px 6px', borderRadius: 4, border: '1px solid #cbd5e1',
+                      background: displayVal === 'Excellent' ? '#dcfce7' : displayVal === 'Normal' ? '#dbeafe' : displayVal === 'Caution' ? '#fef9c3' : displayVal === 'Alarm' ? '#fee2e2' : displayVal === 'Observe' ? '#f3e8ff' : '#f1f5f9',
+                      color: displayVal === 'Excellent' ? '#166534' : displayVal === 'Normal' ? '#1d4ed8' : displayVal === 'Caution' ? '#854d0e' : displayVal === 'Alarm' ? '#991b1b' : displayVal === 'Observe' ? '#6b21a8' : '#475569',
+                      fontWeight: 'bold', cursor: 'pointer'
+                    }}
+                  >
+                    <option value="">Auto ({autoVal})</option>
+                    <option value="Excellent">Excellent</option>
+                    <option value="Normal">Normal</option>
+                    <option value="Caution">Caution</option>
+                    <option value="Alarm">Alarm</option>
+                    <option value="Observe">Observe</option>
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
       {/* Report Container */}
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.01)' }}>
         
         {/* Document Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #f1f5f9', paddingBottom: 14, marginBottom: 18 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img src={logo} alt="Logo" style={{ height: 32, objectFit: 'contain' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {/* Default logo (Always present and permanent) */}
+            <img 
+              src={logo} 
+              alt="Logo" 
+              style={{ height: 32, objectFit: 'contain', display: 'block' }} 
+            />
+
+            {/* Vertical separator */}
+            <div style={{ width: 1, height: 24, background: '#cbd5e1' }} />
+
+            {/* Custom Contractor Logo Wrapper */}
+            {record?.customLogoPath ? (
+              <div
+                style={{
+                  position: 'relative',
+                  cursor: 'pointer',
+                  display: 'inline-block',
+                  border: '1px dashed transparent',
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#cbd5e1';
+                  e.currentTarget.style.background = '#f8fafc';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'transparent';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                title="Click to change custom contractor logo"
+              >
+                <img 
+                  src={record.customLogoPath} 
+                  alt="Contractor Logo" 
+                  style={{ height: 32, objectFit: 'contain', display: 'block' }} 
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleLogoRemove();
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: -6,
+                    right: -6,
+                    background: '#ef4444',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '50%',
+                    width: 14,
+                    height: 14,
+                    fontSize: 9,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                    lineHeight: 1,
+                    padding: 0
+                  }}
+                  title="Remove contractor logo"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  border: '1px dashed #cbd5e1',
+                  borderRadius: 6,
+                  height: 32,
+                  width: 110,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  background: '#f8fafc',
+                  transition: 'all 0.2s',
+                  padding: '0 4px',
+                  textAlign: 'center',
+                  userSelect: 'none'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#94a3b8';
+                  e.currentTarget.style.background = '#f1f5f9';
+                  e.currentTarget.style.color = '#475569';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#cbd5e1';
+                  e.currentTarget.style.background = '#f8fafc';
+                  e.currentTarget.style.color = '#64748b';
+                }}
+                title="Click to upload custom contractor logo"
+              >
+                ➕ Contractor Logo
+              </div>
+            )}
+
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleLogoUpload}
+              accept="image/*"
+              style={{ display: 'none' }}
+            />
+
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>ELECTRICAL MOTOR TEST REPORT</h3>
               <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>Offline Calibration & Diagnostic Suite</p>
@@ -609,6 +1077,115 @@ export default function ReportScreen({ record, onChange }) {
 
         </div>
 
+        {/* Test Summary & Stator Condition Assessment */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 2fr', gap: 16, marginBottom: 20 }}>
+          {/* Summary Text Box */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa', display: 'flex', flexDirection: 'column' }}>
+            <h4 style={{ fontSize: 10, fontWeight: 800, color: '#1e3a8a', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>
+              📝 TEST SUMMARY & COMMENTS
+            </h4>
+            <div style={{ fontSize: 10, color: '#334155', whiteSpace: 'pre-wrap', flex: 1, minHeight: 40, fontStyle: record?.summaryText ? 'normal' : 'italic' }}>
+              {record?.summaryText || 'No summary comments provided.'}
+            </div>
+          </div>
+
+          {/* Condition Assessment Grid */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+            <h4 style={{ fontSize: 10, fontWeight: 800, color: '#1e3a8a', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>
+              🔍 STATOR CONDITION ASSESSMENT
+            </h4>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9, border: '1px solid #e2e8f0' }}>
+              <thead>
+                <tr style={{ background: '#f1f5f9', borderBottom: '1px solid #cbd5e1' }}>
+                  {['Insulation', 'Resistance', 'Inductance', 'Impedance', 'Freq. Response'].map(h => (
+                    <th key={h} style={{ padding: '6px 4px', fontWeight: 700, textAlign: 'center', borderRight: '1px solid #e2e8f0', color: '#1e3a8a' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  {[
+                    { key: 'condInsulation', auto: () => {
+                      const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
+                      if (!hasIns) return '—';
+                      let overallPass = 'Pass (Excellent)';
+                      Object.keys(insData).forEach(tab => {
+                        const tabData = insData[tab] || {};
+                        const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
+                        activeTables.forEach(tableId => {
+                          const rows = tabData[tableId];
+                          const runMeta = tabData[`${tableId}_meta`] || {};
+                          const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record?.temperature || 25);
+                          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                          const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
+                          const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
+                          const status = getPassStatus(record?.correctInsulationTo40 ? Rc40 : Rt);
+                          if (status.text.includes('Fail')) overallPass = 'Fail';
+                          else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
+                        });
+                      });
+                      return overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+                    }},
+                    { key: 'condResistance', auto: () => statorResImb !== null ? (statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—' },
+                    { key: 'condInductance', auto: () => statorIndImb !== null ? (statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—' },
+                    { key: 'condImpedance', auto: () => {
+                      if (statorImpImb !== null) {
+                        return statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+                      }
+                      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+                      return hasImp ? 'Normal' : '—';
+                    }},
+                    { key: 'condFrequency', auto: () => {
+                      let maxSwImb = 0;
+                      ['ind', 'res'].forEach(t => {
+                        ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
+                          const v12 = mulData[`stator_${t}_1-2_${f}`]?.value;
+                          const v13 = mulData[`stator_${t}_1-3_${f}`]?.value;
+                          const v23 = mulData[`stator_${t}_2-3_${f}`]?.value;
+                          const imb = calculateImbalance(v12, v13, v23);
+                          if (imb !== null && imb > maxSwImb) maxSwImb = imb;
+                        });
+                      });
+                      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+                    }}
+                  ].map(c => {
+                    const autoVal = c.auto();
+                    const val = record?.[c.key] || autoVal;
+                    
+                    const bgColors = {
+                      'Excellent': '#dcfce7',
+                      'Normal': '#dbeafe',
+                      'Caution': '#fef9c3',
+                      'Alarm': '#fee2e2',
+                      'Observe': '#f3e8ff'
+                    };
+                    const textColors = {
+                      'Excellent': '#155724',
+                      'Normal': '#004085',
+                      'Caution': '#856404',
+                      'Alarm': '#721c24',
+                      'Observe': '#6b21a8'
+                    };
+
+                    const bg = bgColors[val] || '#fff';
+                    const color = textColors[val] || '#475569';
+
+                    return (
+                      <td key={c.key} style={{
+                        padding: '8px 4px', textAlign: 'center', fontWeight: 'bold',
+                        borderRight: '1px solid #e2e8f0', background: bg, color: color
+                      }}>
+                        {val}
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* Multimeter Winding Table */}
         {hasMulData && (
           <div style={{ marginBottom: 20 }}>
@@ -635,16 +1212,26 @@ export default function ReportScreen({ record, onChange }) {
                   
                   {/* Summary Table */}
                   <div style={{ marginBottom: 16 }}>
-                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Readings Summary Table (100Hz values for ACR / L)</h6>
+                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Readings Summary Table</h6>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
                       <thead>
                         <tr style={{ background: '#0f172a', color: '#fff' }}>
                           <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
                           <th style={{ padding: '6px 8px', textAlign: 'right' }}>DCR (Ω){record?.correctWindingTo20 ? ' @20°C' : ''}</th>
-                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>ACR @100Hz (Ω){record?.correctWindingTo20 ? ' @20°C' : ''}</th>
-                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>L @100Hz (mH)</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>ACR (Ω){record?.correctWindingTo20 ? ' @20°C' : ''}</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>L (mH)</th>
                           <th style={{ padding: '6px 8px', textAlign: 'right' }}>Capacitance (nF)</th>
                           <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
+                          <th style={{ padding: '6px 8px', textAlign: 'right' }}>Angle (°)</th>
+                        </tr>
+                        <tr style={{ background: '#cbd5e1', color: '#1e3a8a', fontSize: '9px', fontWeight: 'bold' }}>
+                          <th style={{ padding: '4px 8px', textAlign: 'left' }}>Injected Freq.</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>0Hz</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanCapFreq || '1kHz'}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{mulData[`${group}_imp_1-2_z`]?.frequency || '—'}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{mulData[`${group}_imp_1-2_z`]?.frequency || '—'}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -682,6 +1269,11 @@ export default function ReportScreen({ record, onChange }) {
                           let impVal = mulData[impKey]?.value;
                           let impDisp = isOverload(impVal, 'Z') ? 'O.L' : (impVal !== undefined && impVal !== null && impVal !== '' ? impVal : '—');
 
+                          // 6. Angle
+                          const degKey = `${group}_imp_${phase}_deg`;
+                          let degVal = mulData[degKey]?.value;
+                          let degDisp = (degVal !== undefined && degVal !== null && degVal !== '') ? degVal : '—';
+
                           return (
                             <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
                               <td style={{ padding: '6px 8px', fontWeight: 600 }}>Phase {phase}</td>
@@ -690,9 +1282,72 @@ export default function ReportScreen({ record, onChange }) {
                               <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{indDisp}</td>
                               <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{capDisp}</td>
                               <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{impDisp}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{degDisp}</td>
                             </tr>
                           );
                         })}
+                        {(() => {
+                          const getImbalanceCellData = (imb) => {
+                            if (imb === null) return { bg: '#fff', text: '#64748b', display: '—' };
+                            const display = `${imb.toFixed(2)}%`;
+                            if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                            if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                            return { bg: '#d1fae5', text: '#065f46', display };
+                          };
+
+                          const dcrVals = ['1-2', '1-3', '2-3'].map(phase => {
+                            const key = `${group}_res_${phase}`;
+                            let val = mulData[key]?.value;
+                            if (record?.correctWindingTo20 && val !== undefined && val !== null && val !== '') {
+                              const tempNum = isNaN(parseFloat(mulData[key]?.temperature)) ? 25 : parseFloat(mulData[key]?.temperature);
+                              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+                            }
+                            return val;
+                          });
+                          const dcrSumImb = calculateImbalance(dcrVals[0], dcrVals[1], dcrVals[2]);
+
+                          const acrVals = ['1-2', '1-3', '2-3'].map(phase => {
+                            const key = `${group}_res_${phase}_100Hz`;
+                            let val = mulData[key]?.value;
+                            if (record?.correctWindingTo20 && val !== undefined && val !== null && val !== '') {
+                              const tempNum = isNaN(parseFloat(mulData[key]?.temperature)) ? 25 : parseFloat(mulData[key]?.temperature);
+                              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+                            }
+                            return val;
+                          });
+                          const acrSumImb = calculateImbalance(acrVals[0], acrVals[1], acrVals[2]);
+
+                          const indVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_ind_${phase}_100Hz`]?.value);
+                          const indSumImb = calculateImbalance(indVals[0], indVals[1], indVals[2]);
+
+                          const capVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
+                          const capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+
+                          const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_z`]?.value);
+                          const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
+
+                          const degVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_deg`]?.value);
+                          const degSumImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
+
+                          const cellDcr = getImbalanceCellData(dcrSumImb);
+                          const cellAcr = getImbalanceCellData(acrSumImb);
+                          const cellInd = getImbalanceCellData(indSumImb);
+                          const cellCap = getImbalanceCellData(capSumImb);
+                          const cellImp = getImbalanceCellData(impSumImb);
+                          const cellDeg = getImbalanceCellData(degSumImb);
+
+                          return (
+                            <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                              <td style={{ padding: '6px 8px', color: '#1e3a8a' }}>% Imbalance</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellDcr.bg, color: cellDcr.text, fontFamily: 'monospace' }}>{cellDcr.display}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellAcr.bg, color: cellAcr.text, fontFamily: 'monospace' }}>{cellAcr.display}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellInd.bg, color: cellInd.text, fontFamily: 'monospace' }}>{cellInd.display}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellCap.bg, color: cellCap.text, fontFamily: 'monospace' }}>{cellCap.display}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellImp.bg, color: cellImp.text, fontFamily: 'monospace' }}>{cellImp.display}</td>
+                              <td style={{ padding: '6px 8px', textAlign: 'right', background: cellDeg.bg, color: cellDeg.text, fontFamily: 'monospace' }}>{cellDeg.display}</td>
+                            </tr>
+                          );
+                        })()}
                       </tbody>
                     </table>
                   </div>
@@ -863,7 +1518,8 @@ export default function ReportScreen({ record, onChange }) {
             })}
             
             {/* Phase Imbalance warning section */}
-            {(statorResImb !== null || statorIndImb !== null || rotorResImb !== null || rotorIndImb !== null) && (
+            {(statorResImb !== null || statorIndImb !== null || statorCapImb !== null || statorImpImb !== null ||
+              rotorResImb !== null || rotorIndImb !== null || rotorCapImb !== null || rotorImpImb !== null) && (
               <div style={{ marginTop: 14, padding: 12, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
                 <h5 style={{ fontSize: 11, fontWeight: 700, color: '#b45309', margin: '0 0 8px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
                   ⚠️ Phase Imbalance Diagnostics
@@ -879,6 +1535,16 @@ export default function ReportScreen({ record, onChange }) {
                       Stator Ind Imbalance: <strong>{statorIndImb.toFixed(2)}%</strong> ({statorIndImb < 5 ? 'Good' : 'High'})
                     </div>
                   )}
+                  {statorCapImb !== null && (
+                    <div style={{ fontSize: 10, background: statorCapImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${statorCapImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
+                      Stator Cap Imbalance: <strong>{statorCapImb.toFixed(2)}%</strong> ({statorCapImb < 5 ? 'Good' : 'High'})
+                    </div>
+                  )}
+                  {statorImpImb !== null && (
+                    <div style={{ fontSize: 10, background: statorImpImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${statorImpImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
+                      Stator Imp Imbalance: <strong>{statorImpImb.toFixed(2)}%</strong> ({statorImpImb < 5 ? 'Good' : 'High'})
+                    </div>
+                  )}
                   {rotorResImb !== null && (
                     <div style={{ fontSize: 10, background: rotorResImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${rotorResImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
                       Rotor Res Imbalance: <strong>{rotorResImb.toFixed(2)}%</strong> ({rotorResImb < 5 ? 'Good' : 'High'})
@@ -887,6 +1553,16 @@ export default function ReportScreen({ record, onChange }) {
                   {rotorIndImb !== null && (
                     <div style={{ fontSize: 10, background: rotorIndImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${rotorIndImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
                       Rotor Ind Imbalance: <strong>{rotorIndImb.toFixed(2)}%</strong> ({rotorIndImb < 5 ? 'Good' : 'High'})
+                    </div>
+                  )}
+                  {rotorCapImb !== null && (
+                    <div style={{ fontSize: 10, background: rotorCapImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${rotorCapImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
+                      Rotor Cap Imbalance: <strong>{rotorCapImb.toFixed(2)}%</strong> ({rotorCapImb < 5 ? 'Good' : 'High'})
+                    </div>
+                  )}
+                  {rotorImpImb !== null && (
+                    <div style={{ fontSize: 10, background: rotorImpImb < 5 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${rotorImpImb < 5 ? '#bbf7d0' : '#fecaca'}`, padding: '4px 8px', borderRadius: 6 }}>
+                      Rotor Imp Imbalance: <strong>{rotorImpImb.toFixed(2)}%</strong> ({rotorImpImb < 5 ? 'Good' : 'High'})
                     </div>
                   )}
                 </div>
@@ -906,40 +1582,65 @@ export default function ReportScreen({ record, onChange }) {
                   <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 6px 0' }}>
                     🌀 {group === 'stator' ? 'Stator' : 'Rotor'} Winding Impedance (Z & Phase Angle)
                   </h5>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginBottom: 12 }}>
-                    <thead>
-                      <tr style={{ background: '#1e40af', color: '#fff' }}>
-                        <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
-                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
-                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
-                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
-                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Temp (°C)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {impPhases.map((phase, pIdx) => {
+                  <div style={{ display: 'flex', gap: 16 }}>
+                    <div style={{ flex: 1.2, overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
+                        <thead>
+                          <tr style={{ background: '#1e40af', color: '#fff' }}>
+                            <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Temp (°C)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {impPhases.map((phase, pIdx) => {
+                            const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
+                            const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
+                            const freq = mulData[`${group}_imp_${phase}_z`]?.frequency || mulData[`${group}_imp_${phase}_deg`]?.frequency || '—';
+                            const temp = mulData[`${group}_imp_${phase}_z`]?.temperature || mulData[`${group}_imp_${phase}_deg`]?.temperature || '';
+                            
+                            if (zVal === undefined && degVal === undefined) return null;
+                            return (
+                              <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
+                                <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                  {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
+                                </td>
+                                <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                  {degVal !== undefined ? degVal : '—'}
+                                </td>
+                                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{freq}</td>
+                                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{temp ? `${temp}°C` : '—'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Polar Graph on the right */}
+                    {(() => {
+                      const polarData = [];
+                      impPhases.forEach(phase => {
                         const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
                         const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
-                        const freq = mulData[`${group}_imp_${phase}_z`]?.frequency || mulData[`${group}_imp_${phase}_deg`]?.frequency || '—';
-                        const temp = mulData[`${group}_imp_${phase}_z`]?.temperature || mulData[`${group}_imp_${phase}_deg`]?.temperature || '';
-                        
-                        if (zVal === undefined && degVal === undefined) return null;
-                        return (
-                          <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                            <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
-                            <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                              {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
-                            </td>
-                            <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                              {degVal !== undefined ? degVal : '—'}
-                            </td>
-                            <td style={{ padding: '5px 8px', textAlign: 'right' }}>{freq}</td>
-                            <td style={{ padding: '5px 8px', textAlign: 'right' }}>{temp ? `${temp}°C` : '—'}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                        if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
+                          polarData.push({
+                            phase,
+                            z: parseFloat(zVal),
+                            deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
+                          });
+                        }
+                      });
+                      if (polarData.length === 0) return null;
+                      return (
+                        <div id={`chart-polar-${group}`} style={{ flex: 0.8, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                          <PolarPlot data={polarData} size={180} />
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
               );
             })}
@@ -1078,52 +1779,217 @@ export default function ReportScreen({ record, onChange }) {
                                       <th style={{ padding: '4px 8px', textAlign: 'right' }}>Actual V (V)</th>
                                       <th style={{ padding: '4px 8px', textAlign: 'right' }}>Current (uA)</th>
                                       <th style={{ padding: '4px 8px', textAlign: 'right' }}>
-                                        Resistance (MΩ) {record?.correctInsulationTo40 ? ' @ 40°C' : ''}
+                                        {(() => {
+                                          const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
+                                          const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
+                                          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                                          return `IR at ${tempVal}°C`;
+                                        })()}
+                                      </th>
+                                      <th style={{ padding: '4px 8px', textAlign: 'right' }}>
+                                        IR baselined to 40°C (IEEE 43)
                                       </th>
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {rows.map((r, idx) => {
-                                      const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
-                                      const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
-                                      const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-                                      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-                                      const displayRes = record?.correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance;
-                                      return (
-                                        <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                    {(() => {
+                                      let previewRows = rows;
+                                      if (tab === 'PI') {
+                                        previewRows = rows.filter(r => {
+                                          const t = Math.round(r.time);
+                                          return t !== 0 && (t === 1 || t % 15 === 0);
+                                        });
+                                      } else if (tab === 'DAR') {
+                                        previewRows = rows.filter(r => {
+                                          const t = Math.round(r.time);
+                                          return t !== 0 && (t === 1 || t % 5 === 0);
+                                        });
+                                      } else if (tab === 'SV') {
+                                        const { transientRows } = splitSVData(rows);
+                                        previewRows = transientRows.filter(r => {
+                                          const t = Math.round(r.time);
+                                          return t !== 0 && (t === 1 || t % 10 === 0);
+                                        });
+                                      }
+                                      return previewRows.map((r, idx) => {
+                                        const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
+                                        const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
+                                        const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                                        const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                                        const rawRes = r.resistance;
+                                        const corrRes = typeof r.resistance === 'number' ? Math.round(r.resistance * Kt) : '—';
+                                        return (
+                                          <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                           <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: 'monospace' }}>{r.time}</td>
                                           <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.voltage}</td>
                                           <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.actualVoltage}</td>
                                           <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.current}</td>
-                                          <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{formatResistance(displayRes)}</td>
+                                          <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{formatResistance(rawRes)}</td>
+                                          <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{formatResistance(corrRes)}</td>
                                         </tr>
                                       );
-                                    })}
+                                    });
+                                  })()}
                                   </tbody>
                                 </table>
                               </div>
 
-                              <div id={`chart-insulation-${tab}-${tableId}`} style={{ flex: 1.0, height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px' }}>
-                                <ResponsiveContainer width="100%" height="100%">
-                                  <LineChart data={rows.map(r => {
-                                    const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
-                                    const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
-                                    const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-                                    const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-                                    const displayRes = record?.correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance;
-                                    return {
-                                      time: r.time,
-                                      resistance: displayRes
-                                    };
-                                  })} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                    <XAxis dataKey="time" name="Time" unit="s" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
-                                    <YAxis name="Resistance" unit="MΩ" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
-                                    <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
-                                    <Line type="monotone" dataKey="resistance" name="R (MΩ)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
-                                  </LineChart>
-                                </ResponsiveContainer>
-                              </div>
+                              {(() => {
+                                if (tab === 'SV') {
+                                  const { transientRows, summaryRows } = splitSVData(rows);
+                                  if (summaryRows.length > 0) {
+                                    return (
+                                      <div id={`chart-insulation-${tab}-${tableId}`} style={{ flex: 1.0, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+                                        {/* Chart 1: SV Transient Current Plot */}
+                                        <div style={{ height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px', display: 'flex', flexDirection: 'column' }}>
+                                          <div style={{ fontSize: 9, fontWeight: 700, color: '#1e3a8a', textAlign: 'center', marginBottom: 2 }}>SV Transient Current Plot</div>
+                                          <div style={{ flex: 1, minHeight: 0 }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                              <LineChart data={transientRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </XAxis>
+                                                <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </YAxis>
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                              </LineChart>
+                                            </ResponsiveContainer>
+                                          </div>
+                                        </div>
+                                        {/* Chart 2: SV Step Current Plot */}
+                                        <div style={{ height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px', display: 'flex', flexDirection: 'column' }}>
+                                          <div style={{ fontSize: 9, fontWeight: 700, color: '#1e3a8a', textAlign: 'center', marginBottom: 2 }}>SV Step Current Plot</div>
+                                          <div style={{ flex: 1, minHeight: 0 }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                              <LineChart data={summaryRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </XAxis>
+                                                <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </YAxis>
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                              </LineChart>
+                                            </ResponsiveContainer>
+                                          </div>
+                                        </div>
+                                        {/* Chart 3: SV Step Resistance Plot */}
+                                        <div style={{ height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px', display: 'flex', flexDirection: 'column' }}>
+                                          <div style={{ fontSize: 9, fontWeight: 700, color: '#1e3a8a', textAlign: 'center', marginBottom: 2 }}>SV Step Resistance Plot</div>
+                                          <div style={{ flex: 1, minHeight: 0 }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                              <LineChart data={summaryRows.map(r => {
+                                                const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
+                                                const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
+                                                const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                                                const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                                                const displayRes = record?.correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance;
+                                                return {
+                                                  time: r.time,
+                                                  resistance: displayRes
+                                                };
+                                              })} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </XAxis>
+                                                <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? Math.round(val).toLocaleString() : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                  <Label value="Resistance (MΩ)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                                </YAxis>
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Line type="monotone" dataKey="resistance" name="R (MΩ)" stroke="#10b981" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                              </LineChart>
+                                            </ResponsiveContainer>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  } else {
+                                    // Fallback if no summary rows (but still SV)
+                                    return (
+                                      <div id={`chart-insulation-${tab}-${tableId}`} style={{ flex: 1.0, height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px', display: 'flex', flexDirection: 'column' }}>
+                                        <div style={{ fontSize: 9, fontWeight: 700, color: '#1e3a8a', textAlign: 'center', marginBottom: 2 }}>SV Current vs Time Plot</div>
+                                        <div style={{ flex: 1, minHeight: 0 }}>
+                                          <ResponsiveContainer width="100%" height="100%">
+                                            <LineChart data={transientRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
+                                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                              <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                              </XAxis>
+                                              <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                              </YAxis>
+                                              <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                              <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                            </LineChart>
+                                          </ResponsiveContainer>
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                }
+
+                                // Otherwise standard PI, DAR, or RAMP
+                                const yAxisKey = tab === 'RAMP' ? 'current' : 'resistance';
+                                const yAxisLabel = tab === 'RAMP' ? 'Current (uA)' : 'Resistance (MΩ)';
+                                const lineName = tab === 'RAMP' ? 'I (uA)' : 'R (MΩ)';
+                                const strokeColor = tab === 'RAMP' ? '#3b82f6' : '#3b82f6';
+
+                                return (
+                                  <div id={`chart-insulation-${tab}-${tableId}`} style={{ flex: 1.0, height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px' }}>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <LineChart data={(() => {
+                                        let chartRows = rows.filter(r => r.time !== 0);
+                                        if (tab === 'DAR') {
+                                          const resistances = chartRows
+                                            .map(r => r.resistance)
+                                            .filter(val => val !== null && val !== undefined && !isNaN(val));
+                                          if (resistances.length > 0) {
+                                            const sorted = [...resistances].sort((a, b) => a - b);
+                                            const mid = Math.floor(sorted.length / 2);
+                                            const median = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+                                            if (median !== 0) {
+                                              chartRows = chartRows.filter(r => {
+                                                const val = r.resistance;
+                                                if (val === null || val === undefined || isNaN(val)) return false;
+                                                return val <= median * 10 && val >= median / 10;
+                                              });
+                                            }
+                                          }
+                                        }
+                                        return chartRows.map(r => {
+                                          const runMeta = insData[tab]?.[`${tableId}_meta`] || {};
+                                          const runTemp = runMeta.temperature !== undefined ? runMeta.temperature : record?.temperature;
+                                          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+                                          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+                                          const displayVal = tab === 'RAMP'
+                                            ? r.current
+                                            : (record?.correctInsulationTo40 ? Math.round(r.resistance * Kt) : r.resistance);
+                                          return {
+                                            time: r.time,
+                                            [yAxisKey]: displayVal
+                                          };
+                                        });
+                                      })()} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                        <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                          <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                        </XAxis>
+                                        <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? (yAxisKey === 'current' ? val.toFixed(4) : Math.round(val).toLocaleString()) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                          <Label value={yAxisLabel} angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
+                                        </YAxis>
+                                        <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                        <Line type="monotone" dataKey={yAxisKey} name={lineName} stroke={strokeColor} strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                      </LineChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                );
+                              })()}
                             </div>
 
                           </div>
