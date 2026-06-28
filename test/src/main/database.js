@@ -140,7 +140,8 @@ async function init() {
       ['condImpedance', 'TEXT'],
       ['condFrequency', 'TEXT'],
       ['summaryText', 'TEXT'],
-      ['customLogoPath', 'TEXT']
+      ['customLogoPath', 'TEXT'],
+      ['customClientLogoPath', 'TEXT']
     ];
     newCols.forEach(([col, type]) => {
       try {
@@ -355,9 +356,9 @@ function createRecord(d) {
       efficiency, insulationClass, rotorBars, remark, testingLocation, wireMarkingT1,
       wireMarkingT2, wireMarkingT3, testVoltagePiDar, testVoltageStep, testVoltageRamp,
       correctWindingTo20, correctInsulationTo40, temperature, notes, createdAt,
-      condInsulation, condResistance, condInductance, condImpedance, condFrequency, summaryText, customLogoPath
+      condInsulation, condResistance, condInductance, condImpedance, condFrequency, summaryText, customLogoPath, customClientLogoPath
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `;
   runSql(insertRecordSql, [
@@ -370,7 +371,7 @@ function createRecord(d) {
     d.efficiency || '', d.insulationClass || 'A', d.rotorBars || '', d.remark || '', d.testingLocation || 'Motor Junction Box', d.wireMarkingT1 || '',
     d.wireMarkingT2 || '', d.wireMarkingT3 || '', d.testVoltagePiDar || '500V', d.testVoltageStep || '', d.testVoltageRamp || '',
     d.correctWindingTo20 ? 1 : 0, d.correctInsulationTo40 ? 1 : 0, d.temperature || '', d.notes || '', new Date().toISOString(),
-    d.condInsulation || '', d.condResistance || '', d.condInductance || '', d.condImpedance || '', d.condFrequency || '', d.summaryText || '', d.customLogoPath || ''
+    d.condInsulation || '', d.condResistance || '', d.condInductance || '', d.condImpedance || '', d.condFrequency || '', d.summaryText || '', d.customLogoPath || '', d.customClientLogoPath || ''
   ]);
   saveSync();
   return getRecord(id);
@@ -549,23 +550,35 @@ function saveMultimeterField(recordId, field, value, temperature, frequency) {
       ? updates.frequency
       : existing.frequency;
 
-    if (newValue === undefined || newValue === null) {
+    if ((newValue === undefined || newValue === null) && (newFreq === undefined || newFreq === null)) {
       runSql('DELETE FROM multimeter_tests WHERE recordId = ? AND field = ?', [rId, field]);
     } else {
       runSql(`
         INSERT OR REPLACE INTO multimeter_tests (recordId, field, value, temperature, frequency)
         VALUES (?, ?, ?, ?, ?)
-      `, [rId, field, String(newValue), String(newTemp), String(newFreq)]);
+      `, [
+        rId,
+        field,
+        (newValue !== undefined && newValue !== null) ? String(newValue) : null,
+        String(newTemp),
+        (newFreq !== undefined && newFreq !== null) ? String(newFreq) : null
+      ]);
     }
   } else {
-    if (value !== undefined && value !== null) {
+    if ((value !== undefined && value !== null) || (frequency !== undefined && frequency !== null)) {
       const existing = queryOne('SELECT * FROM multimeter_tests WHERE recordId = ? AND field = ?', [rId, field]) || {};
       const newTemp = temperature !== undefined && temperature !== null ? temperature : (existing.temperature || 0);
       const newFreq = frequency !== undefined && frequency !== null ? frequency : existing.frequency;
       runSql(`
         INSERT OR REPLACE INTO multimeter_tests (recordId, field, value, temperature, frequency)
         VALUES (?, ?, ?, ?, ?)
-      `, [rId, field, String(value), String(newTemp), String(newFreq)]);
+      `, [
+        rId,
+        field,
+        (value !== undefined && value !== null) ? String(value) : null,
+        String(newTemp),
+        (newFreq !== undefined && newFreq !== null) ? String(newFreq) : null
+      ]);
     } else {
       runSql('DELETE FROM multimeter_tests WHERE recordId = ? AND field = ?', [rId, field]);
     }

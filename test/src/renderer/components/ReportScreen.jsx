@@ -125,13 +125,10 @@ const PolarPlot = ({ data, size = 180 }) => {
 };
 
 const api = window.electronAPI;
-
 const isOverload = (val, mode) => {
   if (val === null || val === undefined) return false;
-  let cleanVal = val;
-  if (typeof val === 'string') {
-    cleanVal = val.replace(/,/g, '');
-  }
+  let cleanVal = String(val).replace(/[><]/g, '').trim();
+  cleanVal = cleanVal.replace(/,/g, '');
   const num = parseFloat(cleanVal);
   if (isNaN(num)) return false;
   if (num > 9.0e36) return true;
@@ -257,6 +254,83 @@ export default function ReportScreen({ record, onChange }) {
       await api.updateRecord(record.id, { customLogoPath: '' });
     } catch (err) {
       console.error('Failed to clear custom logo in database:', err);
+    }
+  };
+
+  const clientLogoInputRef = useRef(null);
+
+  const handleClientLogoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Downscale large logos to a max dimension of 400px to keep SQLite payload small
+          const maxDim = 400;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const base64Data = canvas.toDataURL('image/png');
+          onChange('customClientLogoPath', base64Data);
+
+          // Save directly to DB immediately to avoid race conditions during export
+          await api.updateRecord(record.id, { customClientLogoPath: base64Data });
+        } catch (err) {
+          console.error('Failed to process custom client logo image:', err);
+        }
+      };
+      img.onerror = () => {
+        console.error('Failed to load selected custom client logo image.');
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleClientLogoRemove = async () => {
+    onChange('customClientLogoPath', 'none');
+    if (clientLogoInputRef.current) {
+      clientLogoInputRef.current.value = '';
+    }
+    
+    // Save update to DB immediately
+    try {
+      await api.updateRecord(record.id, { customClientLogoPath: 'none' });
+    } catch (err) {
+      console.error('Failed to clear custom client logo in database:', err);
+    }
+  };
+
+  const handleClientLogoReset = async () => {
+    onChange('customClientLogoPath', '');
+    if (clientLogoInputRef.current) {
+      clientLogoInputRef.current.value = '';
+    }
+    
+    // Save update to DB immediately
+    try {
+      await api.updateRecord(record.id, { customClientLogoPath: '' });
+    } catch (err) {
+      console.error('Failed to reset custom client logo in database:', err);
     }
   };
 
@@ -891,17 +965,132 @@ export default function ReportScreen({ record, onChange }) {
         {/* Document Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #f1f5f9', paddingBottom: 14, marginBottom: 18 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {/* Default logo (Always present and permanent) */}
-            <img 
-              src={logo} 
-              alt="Logo" 
-              style={{ height: 32, objectFit: 'contain', display: 'block' }} 
+            {/* 1. Client Logo Slot (with default logo.png) */}
+            {record?.customClientLogoPath !== 'none' ? (
+              <div
+                style={{
+                  position: 'relative',
+                  cursor: 'pointer',
+                  display: 'inline-block',
+                  border: '1px dashed transparent',
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#cbd5e1';
+                  e.currentTarget.style.background = '#f8fafc';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'transparent';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+                onClick={() => clientLogoInputRef.current?.click()}
+                title="Click to change client logo (defaults to Sarox logo)"
+              >
+                <img 
+                  src={record?.customClientLogoPath || logo} 
+                  alt="Client Logo" 
+                  style={{ height: 32, objectFit: 'contain', display: 'block' }} 
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleClientLogoRemove(); // sets to 'none'
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: -6,
+                    right: -6,
+                    background: '#ef4444',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '50%',
+                    width: 14,
+                    height: 14,
+                    fontSize: 9,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                    lineHeight: 1,
+                    padding: 0
+                  }}
+                  title="Remove client logo completely"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                <div
+                  onClick={() => clientLogoInputRef.current?.click()}
+                  style={{
+                    border: '1px dashed #cbd5e1',
+                    borderRadius: 6,
+                    height: 32,
+                    width: 110,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: '#64748b',
+                    cursor: 'pointer',
+                    background: '#f8fafc',
+                    transition: 'all 0.2s',
+                    padding: '0 4px',
+                    textAlign: 'center',
+                    userSelect: 'none'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = '#94a3b8';
+                    e.currentTarget.style.background = '#f1f5f9';
+                    e.currentTarget.style.color = '#475569';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = '#cbd5e1';
+                    e.currentTarget.style.background = '#f8fafc';
+                    e.currentTarget.style.color = '#64748b';
+                  }}
+                  title="Click to upload custom client logo"
+                >
+                  ➕ Client Logo
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleClientLogoReset(); // sets to '' (restores default)
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#2563eb',
+                    fontSize: 8,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: 0
+                  }}
+                >
+                  Use default logo
+                </button>
+              </div>
+            )}
+
+            <input
+              type="file"
+              ref={clientLogoInputRef}
+              onChange={handleClientLogoUpload}
+              accept="image/*"
+              style={{ display: 'none' }}
             />
 
             {/* Vertical separator */}
             <div style={{ width: 1, height: 24, background: '#cbd5e1' }} />
 
-            {/* Custom Contractor Logo Wrapper */}
+            {/* 2. Contractor Logo Slot */}
             {record?.customLogoPath ? (
               <div
                 style={{
@@ -922,7 +1111,7 @@ export default function ReportScreen({ record, onChange }) {
                   e.currentTarget.style.background = 'transparent';
                 }}
                 onClick={() => fileInputRef.current?.click()}
-                title="Click to change custom contractor logo"
+                title="Click to change contractor logo"
               >
                 <img 
                   src={record.customLogoPath} 
@@ -1002,6 +1191,9 @@ export default function ReportScreen({ record, onChange }) {
               accept="image/*"
               style={{ display: 'none' }}
             />
+
+            {/* Vertical separator */}
+            <div style={{ width: 1, height: 24, background: '#cbd5e1' }} />
 
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>ELECTRICAL MOTOR TEST REPORT</h3>
@@ -1198,12 +1390,16 @@ export default function ReportScreen({ record, onChange }) {
               const resFreq = mulData[`${group}_res_freq`]?.frequency;
               const indFreq = mulData[`${group}_ind_freq`]?.frequency;
               const capFreq = mulData[`${group}_cap_freq`]?.frequency;
+              const impFreq = mulData[`${group}_imp_freq`]?.frequency;
 
-              const cleanResFreq = (resFreq && resFreq !== 'undefined') ? ` [${resFreq}]` : '';
+              const cleanResFreq = ' [0Hz]';
               const cleanIndFreq = (indFreq && indFreq !== 'undefined') ? ` [${indFreq}]` : '';
               const cleanCapFreq = (capFreq && capFreq !== 'undefined') ? ` [${capFreq}]` : '';
+              
+              const cleanCapFreqText = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
+              const cleanImpFreqText = (impFreq && impFreq !== 'undefined') ? impFreq : '—';
 
-              const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+              const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
               const capacitancePhases = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
 
               return (
@@ -1229,9 +1425,9 @@ export default function ReportScreen({ record, onChange }) {
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>0Hz</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
-                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanCapFreq || '1kHz'}</th>
-                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{mulData[`${group}_imp_1-2_z`]?.frequency || '—'}</th>
-                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{mulData[`${group}_imp_1-2_z`]?.frequency || '—'}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanCapFreqText}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanImpFreqText}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanImpFreqText}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1321,7 +1517,11 @@ export default function ReportScreen({ record, onChange }) {
                           const indSumImb = calculateImbalance(indVals[0], indVals[1], indVals[2]);
 
                           const capVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
-                          const capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+                          let capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+                          if (capSumImb === null || capSumImb === undefined) {
+                            const capGndVals = ['1-GND', '2-GND', '3-GND'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
+                            capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
+                          }
 
                           const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_z`]?.value);
                           const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
@@ -1352,13 +1552,13 @@ export default function ReportScreen({ record, onChange }) {
                     </table>
                   </div>
 
-                  {/* Grid for the four tables */}
+                  {/* Grid for DCR and Capacitance */}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                     
                     {/* Winding Resistance (DCR) Table */}
                     <div>
                       <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Resistance (DCR) {cleanResFreq}</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
                         <thead>
                           <tr style={{ background: '#1e40af', color: '#fff' }}>
                             <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
@@ -1367,7 +1567,7 @@ export default function ReportScreen({ record, onChange }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {standardPhases.map((phase, idx) => {
+                          {['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].map((phase, idx) => {
                             const key = `${group}_res_${phase}`;
                             let val = mulData[key]?.value;
                             let temp = mulData[key]?.temperature;
@@ -1382,7 +1582,7 @@ export default function ReportScreen({ record, onChange }) {
                             
                             let displayVal = isOverload(val, 'R') ? 'O.L' : (val !== undefined && val !== null && val !== '' ? val : '—');
                             return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                              <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
                                 <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
                                 <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
                                 <td style={{ padding: '4px 6px', textAlign: 'right' }}>{temp}</td>
@@ -1393,92 +1593,10 @@ export default function ReportScreen({ record, onChange }) {
                       </table>
                     </div>
 
-                    {/* AC Winding Resistance (ACR) Table */}
-                    <div>
-                      <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>AC Winding Resistance (ACR)</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
-                        <thead>
-                          <tr style={{ background: '#1e40af', color: '#fff' }}>
-                            <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Resistance (ACR) (Ω)</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Freq / Temp</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {standardPhases.map((phase, idx) => {
-                            const sweep100Key = `${group}_res_${phase}_100Hz`;
-                            let val = mulData[sweep100Key]?.value;
-                            let temp = mulData[sweep100Key]?.temperature;
-
-                            if (temp === 'undefined' || temp === null || temp === undefined || temp === '') temp = '—';
-                            else temp = `${temp}°C`;
-
-                            if (record?.correctWindingTo20 && val !== undefined && val !== null && val !== '') {
-                              const tempNum = isNaN(parseFloat(mulData[sweep100Key]?.temperature)) ? 25 : parseFloat(mulData[sweep100Key]?.temperature);
-                              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
-                            }
-                            
-                            let displayVal = isOverload(val, 'R') ? 'O.L' : (val !== undefined && val !== null && val !== '' ? val : '—');
-                            let freqTempLabel = val !== undefined && val !== null && val !== '' ? `100Hz / ${temp}` : `—`;
-
-                            return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freqTempLabel}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Inductance Table */}
-                    <div>
-                      <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Inductance {cleanIndFreq}</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
-                        <thead>
-                          <tr style={{ background: '#1e40af', color: '#fff' }}>
-                            <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Inductance (mH)</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Frequency</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {standardPhases.map((phase, idx) => {
-                            const key = `${group}_ind_${phase}`;
-                            let val = mulData[key]?.value;
-                            let freq = mulData[key]?.frequency;
-                            
-                            // Fallback to 100Hz sweep if empty
-                            if (val === undefined || val === null || val === '') {
-                              const sweep100Key = `${group}_ind_${phase}_100Hz`;
-                              const sweepVal = mulData[sweep100Key]?.value;
-                              if (sweepVal !== undefined && sweepVal !== null && sweepVal !== '') {
-                                val = sweepVal;
-                                freq = '100Hz';
-                              }
-                            }
-
-                            if (freq === 'undefined' || freq === null || freq === undefined || freq === '') freq = '—';
-                            
-                            const displayVal = isOverload(val, 'L') ? 'O.L' : (val !== undefined ? val : '—');
-                            return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freq}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
                     {/* Capacitance Table */}
                     <div>
                       <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Capacitance {cleanCapFreq}</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
                         <thead>
                           <tr style={{ background: '#1e40af', color: '#fff' }}>
                             <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
@@ -1500,7 +1618,7 @@ export default function ReportScreen({ record, onChange }) {
                               
                               const displayVal = isOverload(val, 'C') ? 'O.L' : (val !== undefined ? val : '—');
                               return (
-                                <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
                                   <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
                                   <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
                                   <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freq}</td>
@@ -1512,6 +1630,108 @@ export default function ReportScreen({ record, onChange }) {
                       </table>
                     </div>
 
+                  </div>
+
+                  {/* AC Winding Resistance (ACR) Table */}
+                  <div style={{ marginTop: 16 }}>
+                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>AC Winding Resistance (ACR) (Ω)</h6>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
+                      <thead>
+                        <tr style={{ background: '#1e40af', color: '#fff' }}>
+                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>120Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>1kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>10kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100kHz</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].map((phase, idx) => {
+                          return (
+                            <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                              <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
+                              {['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+                                const key = `${group}_res_${phase}_${f}`;
+                                const cellData = mulData[key];
+                                let val = cellData?.value;
+                                
+                                // Fallback to spot ACR if sweep is empty
+                                if (val === undefined || val === null || val === '') {
+                                  const spotKey = `${group}_res_${phase}`;
+                                  const spotVal = mulData[spotKey]?.value;
+                                  const spotFreq = mulData[spotKey]?.frequency;
+                                  if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+                                    val = spotVal;
+                                  }
+                                }
+
+                                if (val !== undefined && val !== null && val !== '') {
+                                  val = parseFloat(val);
+                                  if (record?.correctWindingTo20) {
+                                    const tempNum = isNaN(parseFloat(cellData?.temperature)) ? 25 : parseFloat(cellData?.temperature);
+                                    val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+                                  }
+                                }
+                                const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'R') ? 'O.L' : String(val)) : '—';
+                                return (
+                                  <td key={f} style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                    {displayVal}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Inductance Table */}
+                  <div style={{ marginTop: 16 }}>
+                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Inductance (mH)</h6>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
+                      <thead>
+                        <tr style={{ background: '#1e40af', color: '#fff' }}>
+                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>120Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>1kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>10kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100kHz</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].map((phase, idx) => {
+                          return (
+                            <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                              <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
+                              {['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+                                const key = `${group}_ind_${phase}_${f}`;
+                                let val = mulData[key]?.value;
+                                
+                                // Fallback to spot Inductance if sweep is empty
+                                if (val === undefined || val === null || val === '') {
+                                  const spotKey = `${group}_ind_${phase}`;
+                                  const spotVal = mulData[spotKey]?.value;
+                                  const spotFreq = mulData[spotKey]?.frequency;
+                                  if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+                                    val = spotVal;
+                                  }
+                                }
+
+                                const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'L') ? 'O.L' : String(val)) : '—';
+                                return (
+                                  <td key={f} style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                    {displayVal}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               );
@@ -1598,10 +1818,19 @@ export default function ReportScreen({ record, onChange }) {
                           {impPhases.map((phase, pIdx) => {
                             const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
                             const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
-                            const freq = mulData[`${group}_imp_${phase}_z`]?.frequency || mulData[`${group}_imp_${phase}_deg`]?.frequency || '—';
+                            const fVal = mulData[`${group}_imp_${phase}_z`]?.frequency;
+                            const dVal = mulData[`${group}_imp_${phase}_deg`]?.frequency;
+                            const groupImpFreq = mulData[`${group}_imp_freq`]?.frequency;
+                            let freq = '—';
+                            if (fVal && fVal !== 'undefined' && fVal !== 'null') {
+                              freq = fVal;
+                            } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
+                              freq = dVal;
+                            } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
+                              freq = groupImpFreq;
+                            }
                             const temp = mulData[`${group}_imp_${phase}_z`]?.temperature || mulData[`${group}_imp_${phase}_deg`]?.temperature || '';
                             
-                            if (zVal === undefined && degVal === undefined) return null;
                             return (
                               <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
                                 <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>

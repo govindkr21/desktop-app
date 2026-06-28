@@ -737,20 +737,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
   const infoSheet = workbook.addWorksheet('Motor Info & Setup');
   infoSheet.columns = [{ width: 28 }, { width: 38 }];
 
-  const defaultLogoPath = getLogoPath();
-  let defaultLogoId = null;
-  if (defaultLogoPath) {
-    try {
-      defaultLogoId = workbook.addImage({
-        filename: defaultLogoPath,
-        extension: 'png',
-      });
-    } catch (e) {
-      console.error('Failed to embed default logo in Excel:', e);
-    }
-  }
-
-  let customLogoId = null;
+  let contractorLogoId = null;
   const customLogo = record.customLogoPath;
   if (customLogo && customLogo.startsWith('data:image/')) {
     try {
@@ -766,7 +753,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
           extension = 'png';
         }
         const base64Data = customLogo.substring(commaIdx + 1);
-        customLogoId = workbook.addImage({
+        contractorLogoId = workbook.addImage({
           base64: base64Data,
           extension: extension,
         });
@@ -776,25 +763,77 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     }
   }
 
-  const embedLogoAndDate = (sheet, startCol, startRow = 0) => {
-    if (defaultLogoId !== null) {
+  let clientLogoId = null;
+  const customClientLogo = record.customClientLogoPath;
+  if (customClientLogo && customClientLogo.startsWith('data:image/')) {
+    try {
+      const commaIdx = customClientLogo.indexOf(',');
+      if (commaIdx !== -1) {
+        const mimeTypePart = customClientLogo.substring(5, commaIdx);
+        let extension = mimeTypePart.split(';')[0].split('/')[1] || 'png';
+        if (extension === 'jpeg' || extension === 'jpg') {
+          extension = 'jpeg';
+        } else if (extension === 'gif') {
+          extension = 'gif';
+        } else {
+          extension = 'png';
+        }
+        const base64Data = customClientLogo.substring(commaIdx + 1);
+        clientLogoId = workbook.addImage({
+          base64: base64Data,
+          extension: extension,
+        });
+      }
+    } catch (e) {
+      console.error('Failed to embed custom client logo in Excel:', e);
+    }
+  }
+
+  if (clientLogoId === null && customClientLogo !== 'none') {
+    const defaultLogoPath = getLogoPath();
+    if (defaultLogoPath) {
       try {
-        sheet.addImage(defaultLogoId, {
+        clientLogoId = workbook.addImage({
+          filename: defaultLogoPath,
+          extension: 'png',
+        });
+      } catch (e) {
+        console.error('Failed to embed default company logo in Excel:', e);
+      }
+    }
+  }
+
+  const embedLogoAndDate = (sheet, startCol, startRow = 0) => {
+    if (clientLogoId !== null) {
+      try {
+        sheet.addImage(clientLogoId, {
           tl: { col: startCol, row: startRow },
           ext: { width: 120, height: 35 }
         });
       } catch (err) {
-        console.error('Failed to embed default logo in Excel:', err);
+        console.error('Failed to embed client logo in Excel:', err);
       }
-    }
-    if (customLogoId !== null) {
-      try {
-        sheet.addImage(customLogoId, {
-          tl: { col: startCol + 2, row: startRow },
-          ext: { width: 120, height: 35 }
-        });
-      } catch (err) {
-        console.error('Failed to embed custom contractor logo in Excel:', err);
+
+      if (contractorLogoId !== null) {
+        try {
+          sheet.addImage(contractorLogoId, {
+            tl: { col: startCol + 2, row: startRow },
+            ext: { width: 120, height: 35 }
+          });
+        } catch (err) {
+          console.error('Failed to embed contractor logo in Excel:', err);
+        }
+      }
+    } else {
+      if (contractorLogoId !== null) {
+        try {
+          sheet.addImage(contractorLogoId, {
+            tl: { col: startCol, row: startRow },
+            ext: { width: 120, height: 35 }
+          });
+        } catch (err) {
+          console.error('Failed to embed contractor logo in Excel:', err);
+        }
       }
     }
     const cell = sheet.getCell(startRow + 4, startCol + 1);
@@ -1019,7 +1058,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     gCell.alignment = { horizontal: 'left', vertical: 'middle' };
     groupRow.height = 24;
 
-    const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+    const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
     const capacitancePhases = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
 
     // Helper to style a header row
@@ -1066,8 +1105,8 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     // Row 2: Injected Freq headers
     const capFreq = mulData[`${group}_cap_freq`]?.frequency;
     const capFreqText = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
-    const zFreqText = mulData[`${group}_imp_1-2_z`]?.frequency || '—';
-    const cleanZFreqText = (zFreqText && zFreqText !== 'undefined') ? zFreqText : '—';
+    const zFreq = mulData[`${group}_imp_freq`]?.frequency;
+    const cleanZFreqText = (zFreq && zFreq !== 'undefined') ? zFreq : '—';
     const t0Headers2 = windingSheet.addRow([
       'Injected Freq.',
       '0Hz',
@@ -1175,7 +1214,11 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     const indSumImb = calculateImbalance(indVals[0], indVals[1], indVals[2]);
 
     const capVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
-    const capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+    let capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+    if (capSumImb === null) {
+      const capGndVals = ['1-GND', '2-GND', '3-GND'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
+      capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
+    }
 
     const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_z`]?.value);
     const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
@@ -1261,32 +1304,42 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     // ─────────────────────────────────────────────
     windingSheet.addRow([]); // spacer
     const t2Title = windingSheet.addRow(['AC Winding Resistance (ACR)']);
-    windingSheet.mergeCells(`A${t2Title.number}:D${t2Title.number}`);
+    windingSheet.mergeCells(`A${t2Title.number}:F${t2Title.number}`);
     t2Title.getCell(1).font = boldFont;
 
-    const t2Headers = windingSheet.addRow(['Phase Line', `Resistance (ACR) (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}`, 'Frequency', 'Temperature (°C)']);
-    styleHeaderRow(t2Headers, 4);
+    const t2Headers = windingSheet.addRow(['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
+    styleHeaderRow(t2Headers, 6);
 
-    standardPhases.forEach((phase, pIdx) => {
-      const acrKey = `${group}_res_${phase}_100Hz`;
-      let acrVal = (mulData[acrKey]?.value !== undefined && mulData[acrKey]?.value !== null && mulData[acrKey]?.value !== '') ? parseFloat(mulData[acrKey]?.value) : null;
-      let acrTemp = mulData[acrKey]?.temperature;
+    ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach((phase, pIdx) => {
+      const rowVals = [`Phase ${phase}`];
+      ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
+        const key = `${group}_res_${phase}_${f}`;
+        const cellData = mulData[key];
+        let val = cellData?.value;
+        
+        // Fallback to spot ACR if sweep is empty
+        if (val === undefined || val === null || val === '') {
+          const spotKey = `${group}_res_${phase}`;
+          const spotVal = mulData[spotKey]?.value;
+          const spotFreq = mulData[spotKey]?.frequency;
+          if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+            val = spotVal;
+          }
+        }
 
-      if (acrTemp === 'undefined' || acrTemp === null || acrTemp === undefined || acrTemp === '') acrTemp = '—';
-      else acrTemp = `${acrTemp}°C`;
+        if (val !== undefined && val !== null && val !== '') {
+          val = parseFloat(val);
+          if (record.correctWindingTo20) {
+            const tempNum = isNaN(parseFloat(cellData?.temperature)) ? 25 : parseFloat(cellData?.temperature);
+            val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+          }
+        }
+        const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'R') ? 'O.L' : String(val)) : '—';
+        rowVals.push(displayVal);
+      });
 
-      if (record.correctWindingTo20 && acrVal !== null && !isNaN(acrVal) && !isOverload(acrVal, 'R')) {
-        const tempNum = isNaN(parseFloat(mulData[acrKey]?.temperature)) ? 25 : parseFloat(mulData[acrKey]?.temperature);
-        acrVal = parseFloat((acrVal * (254.5 / (234.5 + tempNum))).toFixed(3));
-      }
-
-      let acrDisplay = '—';
-      if (acrVal !== undefined && acrVal !== null && acrVal !== '') {
-        acrDisplay = isOverload(acrVal, 'R') ? 'O.L' : String(acrVal);
-      }
-
-      const row = windingSheet.addRow([`Phase ${phase}`, acrDisplay, acrVal !== undefined && acrVal !== null && acrVal !== '' ? '100Hz' : '—', acrTemp]);
-      styleBodyRow(row, 4, pIdx % 2 === 1);
+      const row = windingSheet.addRow(rowVals);
+      styleBodyRow(row, 6, pIdx % 2 === 1);
     });
 
     // ─────────────────────────────────────────────
@@ -1294,36 +1347,34 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     // ─────────────────────────────────────────────
     windingSheet.addRow([]); // spacer
     const t3Title = windingSheet.addRow(['Inductance Measurements']);
-    windingSheet.mergeCells(`A${t3Title.number}:C${t3Title.number}`);
+    windingSheet.mergeCells(`A${t3Title.number}:F${t3Title.number}`);
     t3Title.getCell(1).font = boldFont;
 
-    const t3Headers = windingSheet.addRow(['Phase Line', 'Inductance (mH)', 'Frequency']);
-    styleHeaderRow(t3Headers, 3);
+    const t3Headers = windingSheet.addRow(['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
+    styleHeaderRow(t3Headers, 6);
 
-    standardPhases.forEach((phase, pIdx) => {
-      const iKey = `${group}_ind_${phase}`;
-      let iVal = mulData[iKey]?.value;
-      let iFreq = mulData[iKey]?.frequency;
-      
-      // Fallback to 100Hz sweep if empty
-      if (iVal === undefined || iVal === null || iVal === '') {
-        const sweep100Key = `${group}_ind_${phase}_100Hz`;
-        const sweepVal = mulData[sweep100Key]?.value;
-        if (sweepVal !== undefined && sweepVal !== null && sweepVal !== '') {
-          iVal = sweepVal;
-          iFreq = '100Hz';
+    ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach((phase, pIdx) => {
+      const rowVals = [`Phase ${phase}`];
+      ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
+        const key = `${group}_ind_${phase}_${f}`;
+        let val = mulData[key]?.value;
+        
+        // Fallback to spot Inductance if sweep is empty
+        if (val === undefined || val === null || val === '') {
+          const spotKey = `${group}_ind_${phase}`;
+          const spotVal = mulData[spotKey]?.value;
+          const spotFreq = mulData[spotKey]?.frequency;
+          if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+            val = spotVal;
+          }
         }
-      }
 
-      if (iFreq === 'undefined' || iFreq === null || iFreq === undefined || iFreq === '') iFreq = '—';
+        const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'L') ? 'O.L' : String(val)) : '—';
+        rowVals.push(displayVal);
+      });
 
-      let iDisplay = '—';
-      if (iVal !== undefined && iVal !== null && iVal !== '') {
-        iDisplay = isOverload(iVal, 'L') ? 'O.L' : String(iVal);
-      }
-
-      const row = windingSheet.addRow([`Phase ${phase}`, iDisplay, iFreq]);
-      styleBodyRow(row, 3, pIdx % 2 === 1);
+      const row = windingSheet.addRow(rowVals);
+      styleBodyRow(row, 6, pIdx % 2 === 1);
     });
 
     // ─────────────────────────────────────────────
@@ -1379,8 +1430,17 @@ async function exportExcel(recordId, mainWindow, chartImages) {
         const degKey = `${group}_imp_${phase}_deg`;
         const zVal = mulData[zKey]?.value;
         const degVal = mulData[degKey]?.value;
-        let zFreq = mulData[zKey]?.frequency || mulData[degKey]?.frequency || '—';
-        if (zFreq === 'undefined') zFreq = '—';
+        const groupImpFreq = mulData[`${group}_imp_freq`]?.frequency;
+        const fVal = mulData[zKey]?.frequency;
+        const dVal = mulData[degKey]?.frequency;
+        let zFreq = '—';
+        if (fVal && fVal !== 'undefined' && fVal !== 'null') {
+          zFreq = fVal;
+        } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
+          zFreq = dVal;
+        } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
+          zFreq = groupImpFreq;
+        }
         let zTemp = mulData[zKey]?.temperature !== undefined ? `${mulData[zKey].temperature}°C` : (mulData[degKey]?.temperature !== undefined ? `${mulData[degKey].temperature}°C` : '—');
         if (zTemp.includes('undefined')) zTemp = '—';
 
@@ -1430,7 +1490,13 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     const c12 = mulData[`${group}_cap_1-2`]?.value;
     const c13 = mulData[`${group}_cap_1-3`]?.value;
     const c23 = mulData[`${group}_cap_2-3`]?.value;
-    const cImb = calculateImbalance(c12, c13, c23);
+    let cImb = calculateImbalance(c12, c13, c23);
+    if (cImb === null) {
+      const c1g = mulData[`${group}_cap_1-GND`]?.value;
+      const c2g = mulData[`${group}_cap_2-GND`]?.value;
+      const c3g = mulData[`${group}_cap_3-GND`]?.value;
+      cImb = calculateImbalance(c1g, c2g, c3g);
+    }
 
     const z12 = mulData[`${group}_imp_1-2`]?.value;
     const z13 = mulData[`${group}_imp_1-3`]?.value;
@@ -1594,7 +1660,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       }
 
       // Add Condition Status card
-      if (maxImbalance > 0) {
+      if (Object.keys(colImbalances).length > 0) {
         const statusStr = maxImbalance < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
         const statusText = `Max Imbalance: ${maxImbalance.toFixed(2)}%   |   Condition Status: ${statusStr}`;
         const statusRow = sweepSheet.addRow([statusText]);
@@ -1861,29 +1927,64 @@ async function exportPDF(recordId, mainWindow) {
     doc.rect(0, 0, doc.page.width, 60).fill(BLUE);
 
     // 1. Always draw the default logo
-    const logoPath = getLogoPath();
-    if (logoPath) {
-      try {
-        doc.image(logoPath, 10, 8, { height: 26 });
-      } catch (e) {
-        console.error('Failed to draw default logo in PDF header:', e);
+    const customLogo = record.customLogoPath;
+    const customClientLogo = record.customClientLogoPath;
+
+    let hasClientLogo = false;
+    let hasContractorLogo = false;
+
+    // 1. Determine if Client Logo is present
+    const isClientLogoPresent = (customClientLogo !== 'none');
+
+    // 2. Draw Client Logo first at x = 10 if present
+    if (isClientLogoPresent) {
+      if (customClientLogo && customClientLogo.startsWith('data:image/')) {
+        try {
+          const commaIdx = customClientLogo.indexOf(',');
+          if (commaIdx !== -1) {
+            const base64Data = customClientLogo.substring(commaIdx + 1);
+            const buffer = Buffer.from(base64Data, 'base64');
+            doc.image(buffer, 10, 8, { height: 26 });
+            hasClientLogo = true;
+          }
+        } catch (e) {
+          console.error('Failed to draw custom client logo in PDF header:', e);
+          const logoPath = getLogoPath();
+          if (logoPath) {
+            try {
+              doc.image(logoPath, 10, 8, { height: 26 });
+              hasClientLogo = true;
+            } catch (err) {
+              console.error('Failed to draw fallback client logo in PDF header:', err);
+            }
+          }
+        }
+      } else {
+        const logoPath = getLogoPath();
+        if (logoPath) {
+          try {
+            doc.image(logoPath, 10, 8, { height: 26 });
+            hasClientLogo = true;
+          } catch (e) {
+            console.error('Failed to draw default client logo in PDF header:', e);
+          }
+        }
       }
     }
 
-    // 2. Conditionally draw the custom contractor logo next to it at x = 100
-    const customLogo = record.customLogoPath;
-    let hasCustomLogo = false;
+    // 3. Draw Contractor Logo next to it (at x = 100 if client logo is drawn, else x = 10)
     if (customLogo && customLogo.startsWith('data:image/')) {
+      const contractorLogoX = hasClientLogo ? 100 : 10;
       try {
         const commaIdx = customLogo.indexOf(',');
         if (commaIdx !== -1) {
           const base64Data = customLogo.substring(commaIdx + 1);
           const buffer = Buffer.from(base64Data, 'base64');
-          doc.image(buffer, 100, 8, { height: 26 });
-          hasCustomLogo = true;
+          doc.image(buffer, contractorLogoX, 8, { height: 26 });
+          hasContractorLogo = true;
         }
       } catch (e) {
-        console.error('Failed to draw custom logo in PDF header:', e);
+        console.error('Failed to draw custom contractor logo in PDF header:', e);
       }
     }
 
@@ -1898,7 +1999,7 @@ async function exportPDF(recordId, mainWindow) {
 
     // Header title (right-aligned, dynamically spaced to prevent overlap)
     let currentY = 8;
-    const titleX = hasCustomLogo ? 195 : 140;
+    const titleX = (hasContractorLogo && hasClientLogo) ? 195 : 140;
     doc.fillColor('#FFFFFF').fontSize(10).font('Helvetica-Bold')
       .text(titleText, titleX, currentY, { width: doc.page.width - (titleX + 15), align: 'right' });
       
@@ -2159,11 +2260,11 @@ async function exportPDF(recordId, mainWindow) {
     const indFreq = mulData[`${groupPrefix}_ind_freq`]?.frequency;
     const capFreq = mulData[`${groupPrefix}_cap_freq`]?.frequency;
 
-    const cleanResFreq = (resFreq && resFreq !== 'undefined') ? ` [${resFreq}]` : '';
+    const cleanResFreq = ' [0Hz]';
     const cleanIndFreq = (indFreq && indFreq !== 'undefined') ? ` [${indFreq}]` : '';
     const cleanCapFreq = (capFreq && capFreq !== 'undefined') ? ` [${capFreq}]` : '';
 
-    const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+    const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
     const capacitancePhases = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
 
     let y = doc.y;
@@ -2192,8 +2293,8 @@ async function exportPDF(recordId, mainWindow) {
 
     // Row 2: Injected Freq headers
     const capFreqText = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
-    const zFreqText = mulData[`${groupPrefix}_imp_1-2_z`]?.frequency || '—';
-    const cleanZFreqText = (zFreqText && zFreqText !== 'undefined') ? zFreqText : '—';
+    const zFreq = mulData[`${groupPrefix}_imp_freq`]?.frequency;
+    const cleanZFreqText = (zFreq && zFreq !== 'undefined') ? zFreq : '—';
     const sumHeaders2 = [
       'Injected Freq.',
       '0Hz',
@@ -2324,7 +2425,11 @@ async function exportPDF(recordId, mainWindow) {
     const indSumImb = calculateImbalance(indVals[0], indVals[1], indVals[2]);
 
     const capVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${groupPrefix}_cap_${phase}`]?.value);
-    const capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+    let capSumImb = calculateImbalance(capVals[0], capVals[1], capVals[2]);
+    if (capSumImb === null) {
+      const capGndVals = ['1-GND', '2-GND', '3-GND'].map(phase => mulData[`${groupPrefix}_cap_${phase}`]?.value);
+      capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
+    }
 
     const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${groupPrefix}_imp_${phase}_z`]?.value);
     const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
@@ -2399,10 +2504,10 @@ async function exportPDF(recordId, mainWindow) {
     // ─────────────────────────────────────────────
     // Table 1.5: AC Winding Resistance (ACR)
     // ─────────────────────────────────────────────
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('AC Winding Resistance (ACR)', 40, y);
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('AC Winding Resistance (ACR) (Ohms)', 40, y);
     y += 11;
-    const acrHeaders = ['Phase Line', `Resistance (ACR) (Ohms)${record.correctWindingTo20 ? ' @20°C' : ''}`, 'Frequency', 'Temperature (°C)'];
-    const acrCols = [W * 0.35, W * 0.25, W * 0.2, W * 0.2];
+    const acrHeaders = ['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const acrCols = [W * 0.25, W * 0.15, W * 0.15, W * 0.15, W * 0.15, W * 0.15];
 
     doc.rect(40, y, W, 14).fill(BLUE);
     let ax = 40;
@@ -2413,34 +2518,40 @@ async function exportPDF(recordId, mainWindow) {
     y += 14;
 
     let acrAlternate = false;
-    standardPhases.forEach(phase => {
-      const acrKey = `${groupPrefix}_res_${phase}_100Hz`;
-      let acrVal = (mulData[acrKey]?.value !== undefined && mulData[acrKey]?.value !== null && mulData[acrKey]?.value !== '') ? parseFloat(mulData[acrKey]?.value) : null;
-      let acrTemp = mulData[acrKey]?.temperature;
-
-      if (acrTemp === 'undefined' || acrTemp === null || acrTemp === undefined || acrTemp === '') acrTemp = '—';
-      else acrTemp = `${acrTemp}°C`;
-
-      if (record.correctWindingTo20 && acrVal !== null && !isNaN(acrVal) && !isOverload(acrVal, 'R')) {
-        const tempNum = isNaN(parseFloat(mulData[acrKey]?.temperature)) ? 25 : parseFloat(mulData[acrKey]?.temperature);
-        acrVal = parseFloat((acrVal * (254.5 / (234.5 + tempNum))).toFixed(3));
-      }
-
+    ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach(phase => {
       doc.rect(40, y, W, 12).fill(acrAlternate ? LGRAY : '#FFFFFF');
       ax = 40;
       doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, ax + 6, y + 2, { width: acrCols[0] - 12, align: 'left' });
       ax += acrCols[0];
 
-      let acrDisplay = '—';
-      if (acrVal !== undefined && acrVal !== null && acrVal !== '') {
-        acrDisplay = isOverload(acrVal, 'R') ? 'O.L' : String(acrVal);
-      }
       doc.font('Helvetica').fontSize(7.5);
-      doc.text(acrDisplay, ax, y + 2, { width: acrCols[1], align: 'center' });
-      ax += acrCols[1];
-      doc.text(acrVal !== undefined && acrVal !== null && acrVal !== '' ? '100Hz' : '—', ax, y + 2, { width: acrCols[2], align: 'center' });
-      ax += acrCols[2];
-      doc.text(acrTemp, ax, y + 2, { width: acrCols[3], align: 'center' });
+      ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach((f, fIdx) => {
+        const key = `${groupPrefix}_res_${phase}_${f}`;
+        const cellData = mulData[key];
+        let val = cellData?.value;
+        
+        // Fallback to spot ACR if sweep is empty
+        if (val === undefined || val === null || val === '') {
+          const spotKey = `${groupPrefix}_res_${phase}`;
+          const spotVal = mulData[spotKey]?.value;
+          const spotFreq = mulData[spotKey]?.frequency;
+          if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+            val = spotVal;
+          }
+        }
+
+        if (val !== undefined && val !== null && val !== '') {
+          val = parseFloat(val);
+          if (record.correctWindingTo20) {
+            const tempNum = isNaN(parseFloat(cellData?.temperature)) ? 25 : parseFloat(cellData?.temperature);
+            val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+          }
+        }
+
+        const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'R') ? 'O.L' : String(val)) : '—';
+        doc.text(displayVal, ax, y + 2, { width: acrCols[fIdx + 1], align: 'center' });
+        ax += acrCols[fIdx + 1];
+      });
 
       y += 12;
       acrAlternate = !acrAlternate;
@@ -2449,12 +2560,12 @@ async function exportPDF(recordId, mainWindow) {
     y += 10;
 
     // ─────────────────────────────────────────────
-    // Table 2: Winding Inductance
+    // Table 2: Winding Inductance (mH)
     // ─────────────────────────────────────────────
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('Inductance Measurements', 40, y);
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('Winding Inductance (mH)', 40, y);
     y += 11;
-    const indCols = [W * 0.4, W * 0.3, W * 0.3];
-    const indHeaders = ['Phase Line', `Inductance (mH)${cleanIndFreq}`, 'Frequency'];
+    const indHeaders = ['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const indCols = [W * 0.25, W * 0.15, W * 0.15, W * 0.15, W * 0.15, W * 0.15];
 
     doc.rect(40, y, W, 14).fill(BLUE);
     let ix = 40;
@@ -2465,36 +2576,31 @@ async function exportPDF(recordId, mainWindow) {
     y += 14;
 
     let indAlternate = false;
-    standardPhases.forEach(phase => {
-      const iKey = `${groupPrefix}_ind_${phase}`;
-      let iVal = mulData[iKey]?.value;
-      let iFreq = mulData[iKey]?.frequency;
-      
-      // Fallback to 100Hz sweep if empty
-      if (iVal === undefined || iVal === null || iVal === '') {
-        const sweep100Key = `${groupPrefix}_ind_${phase}_100Hz`;
-        const sweepVal = mulData[sweep100Key]?.value;
-        if (sweepVal !== undefined && sweepVal !== null && sweepVal !== '') {
-          iVal = sweepVal;
-          iFreq = '100Hz';
-        }
-      }
-
-      if (iFreq === 'undefined' || iFreq === null || iFreq === undefined || iFreq === '') iFreq = '—';
-
+    ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach(phase => {
       doc.rect(40, y, W, 12).fill(indAlternate ? LGRAY : '#FFFFFF');
       ix = 40;
       doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, ix + 6, y + 2, { width: indCols[0] - 12, align: 'left' });
       ix += indCols[0];
 
-      let iDisplay = '—';
-      if (iVal !== undefined && iVal !== null && iVal !== '') {
-        iDisplay = isOverload(iVal, 'L') ? 'O.L' : String(iVal);
-      }
       doc.font('Helvetica').fontSize(7.5);
-      doc.text(iDisplay, ix, y + 2, { width: indCols[1], align: 'center' });
-      ix += indCols[1];
-      doc.text(iFreq, ix, y + 2, { width: indCols[2], align: 'center' });
+      ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach((f, fIdx) => {
+        const key = `${groupPrefix}_ind_${phase}_${f}`;
+        let val = mulData[key]?.value;
+        
+        // Fallback to spot Inductance if sweep is empty
+        if (val === undefined || val === null || val === '') {
+          const spotKey = `${groupPrefix}_ind_${phase}`;
+          const spotVal = mulData[spotKey]?.value;
+          const spotFreq = mulData[spotKey]?.frequency;
+          if (spotFreq === f && spotVal !== undefined && spotVal !== null && spotVal !== '') {
+            val = spotVal;
+          }
+        }
+
+        const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'L') ? 'O.L' : String(val)) : '—';
+        doc.text(displayVal, ix, y + 2, { width: indCols[fIdx + 1], align: 'center' });
+        ix += indCols[fIdx + 1];
+      });
 
       y += 12;
       indAlternate = !indAlternate;
@@ -2554,6 +2660,11 @@ async function exportPDF(recordId, mainWindow) {
     const hasImpData = impPhases.some(phase => mulData[`${groupPrefix}_imp_${phase}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_deg`]?.value !== undefined);
     
     if (hasImpData) {
+      if (doc.y + 130 > doc.page.height - 40) {
+        doc.addPage();
+        drawHeader(groupPrefix === 'stator' ? 'STATOR WINDING TEST' : 'ROTOR WINDING TEST');
+      }
+
       doc.fontSize(9).font('Helvetica-Bold').fillColor(BLUE).text(`${groupLabel} Impedance (Z & Phase Angle)`, 40);
       doc.moveDown(0.2);
 
@@ -2577,12 +2688,21 @@ async function exportPDF(recordId, mainWindow) {
         const degKey = `${groupPrefix}_imp_${phase}_deg`;
         const zVal = mulData[zKey]?.value;
         const degVal = mulData[degKey]?.value;
-        let zFreq = mulData[zKey]?.frequency || mulData[degKey]?.frequency || '—';
-        if (zFreq === 'undefined') zFreq = '—';
+        const groupImpFreq = mulData[`${groupPrefix}_imp_freq`]?.frequency;
+        const fVal = mulData[zKey]?.frequency;
+        const dVal = mulData[degKey]?.frequency;
+        let zFreq = '—';
+        if (fVal && fVal !== 'undefined' && fVal !== 'null') {
+          zFreq = fVal;
+        } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
+          zFreq = dVal;
+        } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
+          zFreq = groupImpFreq;
+        }
         let zTemp = mulData[zKey]?.temperature !== undefined ? `${mulData[zKey].temperature}°C` : (mulData[degKey]?.temperature !== undefined ? `${mulData[degKey].temperature}°C` : '—');
         if (zTemp.includes('undefined')) zTemp = '—';
 
-        if (zVal === undefined && degVal === undefined) return;
+
 
         doc.rect(40, iy, W, 13).fill(impAlternate ? LGRAY : '#FFFFFF');
 
@@ -2739,7 +2859,7 @@ async function exportPDF(recordId, mainWindow) {
 
     // Assess condition status and write it below table
     let statusText = '';
-    if (maxImbalance > 0) {
+    if (Object.keys(colImbalances).length > 0) {
       const statusStr = maxImbalance < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
       statusText = `Max Imbalance: ${maxImbalance.toFixed(2)}%  |  Condition Status: ${statusStr}`;
       
