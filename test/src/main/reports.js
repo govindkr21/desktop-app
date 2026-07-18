@@ -59,10 +59,12 @@ function getSystemFonts() {
       }
     }
   } else if (isMac) {
-    const macDirs = ['/Library/Fonts', '/System/Library/Fonts'];
+    const macDirs = ['/System/Library/Fonts/Supplemental', '/Library/Fonts', '/System/Library/Fonts'];
+    // Prefer plain .ttf files; pdfkit fails on .ttc (TrueType Collection) without a font index — throws "createSubset is not a function".
     const candidates = [
-      { regular: 'Helvetica.ttc', bold: 'Helvetica.ttc', italic: 'Helvetica.ttc', boldItalic: 'Helvetica.ttc' },
-      { regular: 'Arial.ttf', bold: 'Arial Bold.ttf', italic: 'Arial Italic.ttf', boldItalic: 'Arial Bold Italic.ttf' }
+      { regular: 'Arial.ttf', bold: 'Arial Bold.ttf', italic: 'Arial Italic.ttf', boldItalic: 'Arial Bold Italic.ttf' },
+      { regular: 'Helvetica Neue.ttf', bold: 'Helvetica Neue Bold.ttf', italic: 'Helvetica Neue Italic.ttf', boldItalic: 'Helvetica Neue Bold Italic.ttf' },
+      { regular: 'Verdana.ttf', bold: 'Verdana Bold.ttf', italic: 'Verdana Italic.ttf', boldItalic: 'Verdana Bold Italic.ttf' }
     ];
     for (const dir of macDirs) {
       for (const cand of candidates) {
@@ -240,6 +242,31 @@ function formatStepVoltage(str) {
   return lastPart;
 }
 
+// Drops the first-few-seconds voltage-stabilization transient (matches InsulationTab).
+// Without this the PI chart auto-scale is dominated by a 2 TΩ (2e6 MΩ) spike at t≈1s
+// and the meaningful data down at ~15k MΩ hugs the x-axis and reads as flat.
+function stripEarlyTransients(rows) {
+  return (rows || []).filter(r => {
+    const t = Number(r?.time);
+    const R = Number(r?.resistance);
+    const I = Number(r?.current);
+    if (t <= 2 && (R >= 1e6 || I <= 0.005 || R <= 0)) return false;
+    return true;
+  });
+}
+
+// Drops the Megger-appended summary block (30 s / 60 s / 600 s spot readings) — detected as the
+// first row where time stops increasing. Raw `rows` should still be used for DAR/PI calculations.
+function stripTrailingSummary(rows) {
+  if (!rows || rows.length === 0) return rows || [];
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i].time) <= Number(rows[i - 1].time)) {
+      return rows.slice(0, i);
+    }
+  }
+  return rows;
+}
+
 function splitSVData(rows) {
   if (!rows || rows.length === 0) return { transientRows: [], summaryRows: [] };
   let splitIndex = -1;
@@ -269,7 +296,7 @@ function splitSVData(rows) {
 // Helper to check pass/fail status
 function getPassStatus(Rc40) {
   if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b' };
-  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a' };
+  if (Rc40 >= 100) return { text: 'Pass (Good)', color: '#16a34a' };
   if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb' };
   return { text: 'Fail (Low Insulation)', color: '#dc2626' };
 }
@@ -351,8 +378,9 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
     const pts = [];
     tableFreqs.forEach(f => {
       const cellData = rawData[`${group}_${type}_${phase}_${f}`];
-      if (cellData && cellData.value !== undefined) {
-        let val = cellData.value;
+      if (cellData && cellData.value !== undefined && cellData.value !== null && cellData.value !== '') {
+        let val = parseFloat(cellData.value);
+        if (isNaN(val)) return;
         if (type === 'res' && isCorrectedMode) {
           const tempNum = isNaN(parseFloat(cellData.temperature)) ? 25 : parseFloat(cellData.temperature);
           val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
@@ -382,10 +410,15 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
   doc.fillColor('#1E3A8A').fontSize(7.5).font('Helvetica-Bold')
     .text(title, startX, startY, { width: width, align: 'center' });
 
-  // Get data boundaries
+  // Get data boundaries — auto-scale with padding so small ranges (e.g. 1.45–4.11 mH)
+  // aren't dwarfed by a 0-based axis. When any value dips below 0 (capacitive dominance),
+  // extend the floor further so the yellow band underneath still renders.
   const rawMinY = Math.min(...allYValues);
-  const minY = rawMinY < 0 ? Math.floor(rawMinY - 1) : 0;
-  const maxY = Math.max(...allYValues) * 1.15 || 100; // 15% headroom
+  const rawMaxY = Math.max(...allYValues);
+  const span = rawMaxY - rawMinY;
+  const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(rawMaxY) * 0.1, 0.1);
+  const minY = rawMinY < 0 ? Math.floor(rawMinY - 1) : rawMinY - pad;
+  const maxY = rawMaxY + pad;
 
   const scaleX = (xIndex) => {
     return plotX + (xIndex / 4) * plotW;
@@ -417,9 +450,19 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
 
     doc.moveTo(plotX, py).lineTo(plotX + plotW, py).dash(2, { space: 2 }).stroke();
 
-    // Y-Axis label
+    // Y-Axis label — pick a compact representation that fits the axis gutter.
+    // Fractional sweeps (e.g. 1.45–4.11 mH) need 2–3 decimals; sub-milli values
+    // (e.g. 7e-4 mH) need scientific notation to avoid overflowing the label box.
+    const abs = Math.abs(yVal);
+    let label;
+    if (yVal === 0) label = '0';
+    else if (abs < 0.01 || abs >= 100000) label = yVal.toExponential(2);
+    else if (abs < 1) label = yVal.toFixed(3);
+    else if (abs < 10) label = yVal.toFixed(2);
+    else if (abs < 100) label = yVal.toFixed(1);
+    else label = String(Math.round(yVal));
     doc.fillColor('#64748B').fontSize(5.5).font('Helvetica')
-      .text(Math.round(yVal).toLocaleString(), startX + 8, py - 2.5, { width: marginL - 10, align: 'right' });
+      .text(label, startX + 8, py - 2.5, { width: marginL - 10, align: 'right' });
   }
   doc.undash();
 
@@ -565,7 +608,7 @@ function drawPDFPolarGraph(doc, title, startX, startY, size, impData) {
 // ─────────────────────────────────────────────
 // VECTOR CHART RENDER ENGINE FOR PDFKIT
 // ─────────────────────────────────────────────
-function drawPDFChart(doc, title, startX, startY, width, height, rawData, xKey, yKey, xLabel, yLabel, isCorrectedMode, tempRecordValue) {
+function drawPDFChart(doc, title, startX, startY, width, height, rawData, xKey, yKey, xLabel, yLabel, isCorrectedMode, tempRecordValue, showDots = true) {
   // 1. Prepare data (apply corrections dynamically if needed!)
   const data = rawData.map(r => {
     let val = r[yKey];
@@ -677,11 +720,13 @@ function drawPDFChart(doc, title, startX, startY, width, height, rawData, xKey, 
     }
     doc.stroke();
 
-    // Draw dots
-    doc.fillColor('#1D4ED8');
-    data.forEach(d => {
-      doc.circle(scaleX(d[xKey]), scaleY(d[yKey]), 1.2).fill();
-    });
+    // Draw dots (skipped for dense charts like PI / SV Transient — line becomes unreadable with 600+ dots)
+    if (showDots) {
+      doc.fillColor('#1D4ED8');
+      data.forEach(d => {
+        doc.circle(scaleX(d[xKey]), scaleY(d[yKey]), 1.2).fill();
+      });
+    }
   }
 
   // Axis Titles
@@ -701,7 +746,8 @@ function drawPDFChart(doc, title, startX, startY, width, height, rawData, xKey, 
 // ─────────────────────────────────────────────
 // EXCEL EXPORT
 // ─────────────────────────────────────────────
-async function exportExcel(recordId, mainWindow, chartImages) {
+async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
+  const includeRotor = !!opts.includeRotor;
   const ExcelJS = require('exceljs');
   const record = db.getRecord(recordId);
   const insData = db.getInsulationData(recordId);
@@ -918,9 +964,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
 
   addSectionHeader('Offline Test Configurations');
   addKeyValue('Testing Location', record.testingLocation);
-  addKeyValue('Wire Marking T1', record.wireMarkingT1);
-  addKeyValue('Wire Marking T2', record.wireMarkingT2);
-  addKeyValue('Wire Marking T3', record.wireMarkingT3);
+  addKeyValue('Wire Marking', `T1: ${record.wireMarkingT1 || '—'},  T2: ${record.wireMarkingT2 || '—'},  T3: ${record.wireMarkingT3 || '—'}`);
   addKeyValue('PI Test Voltage', piVolts);
   addKeyValue('DAR Test Voltage', darVolts);
   addKeyValue('STEP Test Voltage', stepVolts);
@@ -937,7 +981,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     if (key === 'condInsulation') {
       const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
       if (!hasIns) return '—';
-      let overallPass = 'Pass (Excellent)';
+      let overallPass = 'Pass (Good)';
       Object.keys(insData).forEach(tab => {
         const tabData = insData[tab] || {};
         const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
@@ -954,7 +998,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
           else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
         });
       });
-      return overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
     }
     
     // Winding Imbalances at card group level for defaults
@@ -963,14 +1007,14 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
 
     if (key === 'condResistance') {
-      return statorResImb !== null ? (statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     if (key === 'condInductance') {
-      return statorIndImb !== null ? (statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     if (key === 'condImpedance') {
       if (statorImpImb !== null) {
-        return statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
       }
       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
       return hasImp ? 'Normal' : '—';
@@ -986,7 +1030,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
         });
       });
-      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     return '—';
   };
@@ -1001,7 +1045,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     
     // Style background color based on status choice
     const valBgColors = {
-      'Excellent': 'FFD4EDDA',
+      'Good': 'FFD4EDDA',
       'Normal':    'FFD1ECF1',
       'Caution':   'FFFFF3CD',
       'Alarm':     'FFF8D7DA',
@@ -1009,7 +1053,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       '—':         'FFF8FAFC'
     };
     const valTextColors = {
-      'Excellent': 'FF155724',
+      'Good': 'FF155724',
       'Normal':    'FF0C5460',
       'Caution':   'FF856404',
       'Alarm':     'FF721C24',
@@ -1048,9 +1092,22 @@ async function exportExcel(recordId, mainWindow, chartImages) {
 
   const addGroupWindingTables = (group) => {
     const groupName = group.charAt(0).toUpperCase() + group.slice(1);
-    
-    // Group Header
-    const groupRow = windingSheet.addRow([`${groupName} Winding Readings`]);
+
+    // Winding tests within a group share one ambient temperature — pull the first
+    // non-empty temp from any measured field so we can render it once in the group header.
+    const resolveGroupTemp = () => {
+      for (const key of Object.keys(mulData)) {
+        if (!key.startsWith(`${group}_`)) continue;
+        if (!(key.includes('_res_') || key.includes('_ind_') || key.includes('_cap_') || key.includes('_imp_'))) continue;
+        const t = mulData[key]?.temperature;
+        if (t !== undefined && t !== null && t !== '' && t !== 'undefined') return t;
+      }
+      return null;
+    };
+    const groupTemp = resolveGroupTemp();
+
+    // Group Header — appends "🌡️ Test Temp: XX°C" once, so per-row Temp columns can go away.
+    const groupRow = windingSheet.addRow([`${groupName} Winding Readings${groupTemp !== null ? `   🌡️  Test Temp: ${groupTemp}°C` : ''}`]);
     windingSheet.mergeCells(`A${groupRow.number}:G${groupRow.number}`);
     const gCell = groupRow.getCell(1);
     gCell.font = { name: 'Arial', bold: true, size: 12, color: { argb: 'FF1E3A8A' } };
@@ -1267,56 +1324,43 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     });
 
     // ─────────────────────────────────────────────
-    // Table 1: Winding Resistance (DCR)
+    // Combined DCR & ACR Winding Resistance (Ω) — 7 cols (Phase | DCR | 5x ACR)
+    // Temperature is displayed once in the group header, so no per-row Temp column.
     // ─────────────────────────────────────────────
     windingSheet.addRow([]); // spacer
-    const t1Title = windingSheet.addRow(['Winding Resistance (DCR)']);
-    windingSheet.mergeCells(`A${t1Title.number}:C${t1Title.number}`);
+    const t1Title = windingSheet.addRow([`DCR & ACR Winding Resistance (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}`]);
+    windingSheet.mergeCells(`A${t1Title.number}:G${t1Title.number}`);
     t1Title.getCell(1).font = boldFont;
 
-    const t1Headers = windingSheet.addRow(['Phase Line', `Resistance (DCR) (Ω)${record.correctWindingTo20 ? ' @20°C' : ''}`, 'Temperature (°C)']);
-    styleHeaderRow(t1Headers, 3);
+    // Group header row: Phase Line | DCR | ACR (spans 5 freq columns)
+    const t1GroupHeader = windingSheet.addRow(['Phase Line', 'DCR', 'ACR', '', '', '', '']);
+    windingSheet.mergeCells(`C${t1GroupHeader.number}:G${t1GroupHeader.number}`);
+    styleHeaderRow(t1GroupHeader, 7);
 
-    standardPhases.forEach((phase, pIdx) => {
-      const rKey = `${group}_res_${phase}`;
-      let rVal = (mulData[rKey]?.value !== undefined && mulData[rKey]?.value !== null && mulData[rKey]?.value !== '') ? parseFloat(mulData[rKey]?.value) : null;
-      let rTemp = mulData[rKey]?.temperature;
-
-      if (rTemp === 'undefined' || rTemp === null || rTemp === undefined || rTemp === '') rTemp = '—';
-      else rTemp = `${rTemp}°C`;
-
-      if (record.correctWindingTo20 && rVal !== null && !isNaN(rVal) && !isOverload(rVal, 'R')) {
-        const tempNum = isNaN(parseFloat(mulData[rKey]?.temperature)) ? 25 : parseFloat(mulData[rKey]?.temperature);
-        rVal = parseFloat((rVal * (254.5 / (234.5 + tempNum))).toFixed(3));
-      }
-
-      let rDisplay = '—';
-      if (rVal !== undefined && rVal !== null && rVal !== '') {
-        rDisplay = isOverload(rVal, 'R') ? 'O.L' : String(rVal);
-      }
-
-      const row = windingSheet.addRow([`Phase ${phase}`, rDisplay, rTemp]);
-      styleBodyRow(row, 3, pIdx % 2 === 1);
-    });
-
-    // ─────────────────────────────────────────────
-    // Table 2: AC Winding Resistance (ACR)
-    // ─────────────────────────────────────────────
-    windingSheet.addRow([]); // spacer
-    const t2Title = windingSheet.addRow(['AC Winding Resistance (ACR)']);
-    windingSheet.mergeCells(`A${t2Title.number}:F${t2Title.number}`);
-    t2Title.getCell(1).font = boldFont;
-
-    const t2Headers = windingSheet.addRow(['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
-    styleHeaderRow(t2Headers, 6);
+    // Frequency sub-header row — same blue as the rest of the header
+    const t1FreqHeader = windingSheet.addRow(['', '0Hz', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
+    styleHeaderRow(t1FreqHeader, 7);
 
     ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach((phase, pIdx) => {
-      const rowVals = [`Phase ${phase}`];
+      // DCR (spot) value — group temperature shown once at the group header, not per-row.
+      const dcrKey = `${group}_res_${phase}`;
+      let dcrVal = (mulData[dcrKey]?.value !== undefined && mulData[dcrKey]?.value !== null && mulData[dcrKey]?.value !== '') ? parseFloat(mulData[dcrKey]?.value) : null;
+      const rawTemp = mulData[dcrKey]?.temperature;
+      if (record.correctWindingTo20 && dcrVal !== null && !isNaN(dcrVal) && !isOverload(dcrVal, 'R')) {
+        const tempNum = isNaN(parseFloat(rawTemp)) ? 25 : parseFloat(rawTemp);
+        dcrVal = parseFloat((dcrVal * (254.5 / (234.5 + tempNum))).toFixed(3));
+      }
+      let dcrDisplay = '—';
+      if (dcrVal !== undefined && dcrVal !== null && dcrVal !== '') {
+        dcrDisplay = isOverload(dcrVal, 'R') ? 'O.L' : String(dcrVal);
+      }
+
+      const rowVals = [`Phase ${phase}`, dcrDisplay];
       ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
         const key = `${group}_res_${phase}_${f}`;
         const cellData = mulData[key];
         let val = cellData?.value;
-        
+
         // Fallback to spot ACR if sweep is empty
         if (val === undefined || val === null || val === '') {
           const spotKey = `${group}_res_${phase}`;
@@ -1339,7 +1383,10 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       });
 
       const row = windingSheet.addRow(rowVals);
-      styleBodyRow(row, 6, pIdx % 2 === 1);
+      styleBodyRow(row, 7, pIdx % 2 === 1);
+      // Subtle highlight on the DCR data cell — light blue tint + bold text (same brand palette as ACR).
+      row.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } };
+      row.getCell(2).font = { name: 'Arial', bold: true, size: 10 };
     });
 
     // ─────────────────────────────────────────────
@@ -1419,11 +1466,12 @@ async function exportExcel(recordId, mainWindow, chartImages) {
     if (hasImpData) {
       windingSheet.addRow([]); // spacer
       const t5Title = windingSheet.addRow([`${groupName} Impedance (Z & Phase Angle) Measurements`]);
-      windingSheet.mergeCells(`A${t5Title.number}:E${t5Title.number}`);
+      windingSheet.mergeCells(`A${t5Title.number}:D${t5Title.number}`);
       t5Title.getCell(1).font = boldFont;
 
-      const t5Headers = windingSheet.addRow(['Phase Line', 'Impedance Z (Ω)', 'Phase Angle (°)', 'Frequency', 'Temp (°C)']);
-      styleHeaderRow(t5Headers, 5);
+      // Temp column dropped — group temperature is shown once in the group header banner.
+      const t5Headers = windingSheet.addRow(['Phase Line', 'Impedance Z (Ω)', 'Phase Angle (°)', 'Frequency']);
+      styleHeaderRow(t5Headers, 4);
 
       impPhases.forEach((phase, pIdx) => {
         const zKey = `${group}_imp_${phase}_z`;
@@ -1441,8 +1489,6 @@ async function exportExcel(recordId, mainWindow, chartImages) {
         } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
           zFreq = groupImpFreq;
         }
-        let zTemp = mulData[zKey]?.temperature !== undefined ? `${mulData[zKey].temperature}°C` : (mulData[degKey]?.temperature !== undefined ? `${mulData[degKey].temperature}°C` : '—');
-        if (zTemp.includes('undefined')) zTemp = '—';
 
         let zDisplay = '—';
         if (zVal !== undefined && zVal !== null && zVal !== '') {
@@ -1453,8 +1499,8 @@ async function exportExcel(recordId, mainWindow, chartImages) {
           degDisplay = String(degVal);
         }
 
-        const row = windingSheet.addRow([`Phase ${phase}`, zDisplay, degDisplay, zFreq, zTemp]);
-        styleBodyRow(row, 5, pIdx % 2 === 1);
+        const row = windingSheet.addRow([`Phase ${phase}`, zDisplay, degDisplay, zFreq]);
+        styleBodyRow(row, 4, pIdx % 2 === 1);
       });
 
       // Embed polar plot in Excel
@@ -1533,7 +1579,7 @@ async function exportExcel(recordId, mainWindow, chartImages) {
   };
 
   addGroupWindingTables('stator');
-  addGroupWindingTables('rotor');
+  if (includeRotor) addGroupWindingTables('rotor');
 
   const windingFootnoteText = record.correctWindingTo20
     ? `* Note: The winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula (Baseline 20°C correction is ACTIVE).`
@@ -1698,8 +1744,8 @@ async function exportExcel(recordId, mainWindow, chartImages) {
 
     addSweepSection('Stator Inductance Sweep (mH)', 'stator', 'ind', 'mH');
     addSweepSection('Stator AC Resistance Sweep (Ω)', 'stator', 'res', 'Ω');
-    addSweepSection('Rotor Inductance Sweep (mH)', 'rotor', 'ind', 'mH');
-    addSweepSection('Rotor AC Resistance Sweep (Ω)', 'rotor', 'res', 'Ω');
+    if (includeRotor) addSweepSection('Rotor Inductance Sweep (mH)', 'rotor', 'ind', 'mH');
+    if (includeRotor) addSweepSection('Rotor AC Resistance Sweep (Ω)', 'rotor', 'res', 'Ω');
   }
 
   // ── Sheets 3-6: Insulation Tests (Megger) ──
@@ -1754,14 +1800,15 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       tCell.border = borders;
       titleRow.height = 20;
 
-      let excelRows = rows;
+      const cleanRows = (tab === 'PI' || tab === 'DAR' || tab === 'RAMP') ? stripTrailingSummary(rows) : rows;
+      let excelRows = cleanRows;
       if (tab === 'PI') {
-        excelRows = rows.filter(r => {
+        excelRows = cleanRows.filter(r => {
           const t = Math.round(r.time);
           return t !== 0 && (t === 1 || t % 15 === 0);
         });
       } else if (tab === 'DAR') {
-        excelRows = rows.filter(r => {
+        excelRows = cleanRows.filter(r => {
           const t = Math.round(r.time);
           return t !== 0 && (t === 1 || t % 5 === 0);
         });
@@ -1803,8 +1850,9 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       const calcValues = [];
       if (r60 && r30) calcValues.push(`DAR: ${(r60 / r30).toFixed(2)}`);
       if (r600 && r60) calcValues.push(`PI: ${(r600 / r60).toFixed(2)}`);
+      // DD is only meaningful for PI Test — hide it in DAR/SV/RAMP.
       const ddVal = rows.length > 2 ? '1.38' : '—';
-      calcValues.push(`DD: ${ddVal}`);
+      if (tab === 'PI') calcValues.push(`DD: ${ddVal}`);
 
       const summaryRow = sheet.addRow([`Coefficients: ${calcValues.join('  |  ')}`]);
       sheet.mergeCells(`A${summaryRow.number}:G${summaryRow.number}`);
@@ -1814,24 +1862,19 @@ async function exportExcel(recordId, mainWindow, chartImages) {
       sCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
       summaryRow.height = 18;
 
-      // Final Diagnostics summary row
+      // Final Diagnostics summary row — per-table Pass rating removed on request.
       const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
       const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-      const passStatus = getPassStatus(record.correctInsulationTo40 ? Rc40 : Rt);
       const rawRtStr = Rt !== null ? formatResistance(Rt) : '—';
       const corrR40Str = Rc40 !== null ? formatResistance(Rc40) : '—';
 
-      const diagText = `Final Diagnostics: Temp = ${tempVal}°C | Raw Rt = ${rawRtStr} | Corrected R40 = ${corrR40Str} | Status = ${passStatus.text}`;
+      const diagText = `Final Diagnostics: Temp = ${tempVal}°C | Raw Rt = ${rawRtStr} | Corrected R40 = ${corrR40Str}`;
       const diagRow = sheet.addRow([diagText]);
       sheet.mergeCells(`A${diagRow.number}:G${diagRow.number}`);
       const dCell = diagRow.getCell(1);
       dCell.font = boldFont;
       dCell.border = borders;
-      dCell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: passStatus.text.includes('Fail') ? 'FFF8D7DA' : 'D4EDDA' }
-      };
+      dCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
       diagRow.height = 18;
 
       if (chartImages && chartImages.insulation && chartImages.insulation[`${tab}_${tableId}`]) {
@@ -1873,7 +1916,8 @@ async function exportExcel(recordId, mainWindow, chartImages) {
 // ─────────────────────────────────────────────
 // PDF EXPORT
 // ─────────────────────────────────────────────
-async function exportPDF(recordId, mainWindow) {
+async function exportPDF(recordId, mainWindow, opts = {}) {
+  const includeRotor = !!opts.includeRotor;
   const _pdfkit = require('pdfkit');
   const PDFDocument = _pdfkit.default || _pdfkit;
   const record = db.getRecord(recordId);
@@ -1924,19 +1968,21 @@ async function exportPDF(recordId, mainWindow) {
 
   // Page Header (drawn on all pages)
   const drawHeader = (titleText) => {
-    doc.rect(0, 0, doc.page.width, 60).fill(BLUE);
+    // White header band with a slim blue accent stripe on the bottom edge — logos read
+    // as intended on white, and the accent stripe preserves a branded feel.
+    const headerH = 60;
+    doc.rect(0, 0, doc.page.width, headerH).fill('#FFFFFF');
+    doc.rect(0, headerH - 3, doc.page.width, 3).fill(BLUE);
 
-    // 1. Always draw the default logo
     const customLogo = record.customLogoPath;
     const customClientLogo = record.customClientLogoPath;
 
     let hasClientLogo = false;
     let hasContractorLogo = false;
 
-    // 1. Determine if Client Logo is present
     const isClientLogoPresent = (customClientLogo !== 'none');
 
-    // 2. Draw Client Logo first at x = 10 if present
+    // Client logo — left-most position
     if (isClientLogoPresent) {
       if (customClientLogo && customClientLogo.startsWith('data:image/')) {
         try {
@@ -1944,7 +1990,7 @@ async function exportPDF(recordId, mainWindow) {
           if (commaIdx !== -1) {
             const base64Data = customClientLogo.substring(commaIdx + 1);
             const buffer = Buffer.from(base64Data, 'base64');
-            doc.image(buffer, 10, 8, { height: 26 });
+            doc.image(buffer, 14, 10, { height: 30 });
             hasClientLogo = true;
           }
         } catch (e) {
@@ -1952,7 +1998,7 @@ async function exportPDF(recordId, mainWindow) {
           const logoPath = getLogoPath();
           if (logoPath) {
             try {
-              doc.image(logoPath, 10, 8, { height: 26 });
+              doc.image(logoPath, 14, 10, { height: 30 });
               hasClientLogo = true;
             } catch (err) {
               console.error('Failed to draw fallback client logo in PDF header:', err);
@@ -1963,7 +2009,7 @@ async function exportPDF(recordId, mainWindow) {
         const logoPath = getLogoPath();
         if (logoPath) {
           try {
-            doc.image(logoPath, 10, 8, { height: 26 });
+            doc.image(logoPath, 14, 10, { height: 30 });
             hasClientLogo = true;
           } catch (e) {
             console.error('Failed to draw default client logo in PDF header:', e);
@@ -1972,15 +2018,18 @@ async function exportPDF(recordId, mainWindow) {
       }
     }
 
-    // 3. Draw Contractor Logo next to it (at x = 100 if client logo is drawn, else x = 10)
+    // Contractor logo — separated by a thin vertical rule so the two brands don't visually collide
+    const contractorLogoX = hasClientLogo ? 108 : 14;
     if (customLogo && customLogo.startsWith('data:image/')) {
-      const contractorLogoX = hasClientLogo ? 100 : 10;
+      if (hasClientLogo) {
+        doc.strokeColor('#CBD5E1').lineWidth(0.75).moveTo(98, 12).lineTo(98, 42).stroke();
+      }
       try {
         const commaIdx = customLogo.indexOf(',');
         if (commaIdx !== -1) {
           const base64Data = customLogo.substring(commaIdx + 1);
           const buffer = Buffer.from(base64Data, 'base64');
-          doc.image(buffer, contractorLogoX, 8, { height: 26 });
+          doc.image(buffer, contractorLogoX, 10, { height: 30 });
           hasContractorLogo = true;
         }
       } catch (e) {
@@ -1988,31 +2037,31 @@ async function exportPDF(recordId, mainWindow) {
       }
     }
 
-    // Date of Record in header (left-aligned at bottom of header)
-    doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold')
-      .text(`Date: ${record.date || '—'}`, 10, 42, { width: 120, align: 'left' });
+    // Compact date pill below the logos, in slate — readable on white without being loud
+    doc.fillColor(GRAY).fontSize(7).font('Helvetica')
+      .text(`Date: ${record.date || '—'}`, 14, 46, { width: 180, align: 'left' });
 
     // Client Name & Utility Tag repeated on all page headers
     const clientStr = record.clientName ? `Client: ${record.clientName}` : '';
     const tagStr = record.motorUtilityTag ? `Utility Tag: ${record.motorUtilityTag}` : '';
     const repeatHeaderInfo = [clientStr, tagStr].filter(Boolean).join('    |    ');
 
-    // Header title (right-aligned, dynamically spaced to prevent overlap)
-    let currentY = 8;
-    const titleX = (hasContractorLogo && hasClientLogo) ? 195 : 140;
-    doc.fillColor('#FFFFFF').fontSize(10).font('Helvetica-Bold')
+    // Right block: title in brand blue, meta lines in slate
+    let currentY = 10;
+    const titleX = (hasContractorLogo && hasClientLogo) ? 205 : 150;
+    doc.fillColor(BLUE).fontSize(11).font('Helvetica-Bold')
       .text(titleText, titleX, currentY, { width: doc.page.width - (titleX + 15), align: 'right' });
-      
+
     currentY = doc.y + 2;
 
     if (repeatHeaderInfo) {
-      doc.fontSize(7.5).font('Helvetica-Bold')
-        .text(repeatHeaderInfo, 140, currentY, { width: doc.page.width - 155, align: 'right' });
+      doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold')
+        .text(repeatHeaderInfo, 150, currentY, { width: doc.page.width - 165, align: 'right' });
       currentY = doc.y + 2;
     }
-    
-    doc.fontSize(6.5).font('Helvetica')
-      .text('Electrical Motor Testing Suite (Offline Testing)', 140, currentY, { width: doc.page.width - 155, align: 'right' });
+
+    doc.fillColor(GRAY).fontSize(6.5).font('Helvetica')
+      .text('Electrical Motor Testing Suite PdM-S411', 150, currentY, { width: doc.page.width - 165, align: 'right' });
 
     doc.fillColor('#000000');
     doc.y = 80;
@@ -2113,7 +2162,7 @@ async function exportPDF(recordId, mainWindow) {
 
   drawTableSectionTwoCol('Offline Test Setup Configurations', [
     ['Testing Location', record.testingLocation],
-    ['Wire Marking', `${record.wireMarkingT1 || 'T1'} / ${record.wireMarkingT2 || 'T2'} / ${record.wireMarkingT3 || 'T3'}`],
+    ['Wire Marking', `T1: ${record.wireMarkingT1 || '—'},  T2: ${record.wireMarkingT2 || '—'},  T3: ${record.wireMarkingT3 || '—'}`],
     ['PI Test Voltage', piVolts],
     ['DAR Test Voltage', darVolts],
     ['STEP Test Voltage', stepVolts],
@@ -2161,7 +2210,7 @@ async function exportPDF(recordId, mainWindow) {
     if (key === 'condInsulation') {
       const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
       if (!hasIns) return '—';
-      let overallPass = 'Pass (Excellent)';
+      let overallPass = 'Pass (Good)';
       Object.keys(insData).forEach(tab => {
         const tabData = insData[tab] || {};
         const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
@@ -2178,7 +2227,7 @@ async function exportPDF(recordId, mainWindow) {
           else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
         });
       });
-      return overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
     }
     
     // Winding Imbalances at card group level for defaults
@@ -2187,14 +2236,14 @@ async function exportPDF(recordId, mainWindow) {
     const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
 
     if (key === 'condResistance') {
-      return statorResImb !== null ? (statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     if (key === 'condInductance') {
-      return statorIndImb !== null ? (statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     if (key === 'condImpedance') {
       if (statorImpImb !== null) {
-        return statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
       }
       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
       return hasImp ? 'Normal' : '—';
@@ -2210,14 +2259,14 @@ async function exportPDF(recordId, mainWindow) {
           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
         });
       });
-      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
     }
     return '—';
   };
 
   const condKeys = ['condInsulation', 'condResistance', 'condInductance', 'condImpedance', 'condFrequency'];
   const condColors = {
-    'Excellent': { bg: '#D4EDDA', text: '#155724' },
+    'Good': { bg: '#D4EDDA', text: '#155724' },
     'Normal':    { bg: '#D1ECF1', text: '#0C5460' },
     'Caution':   { bg: '#FFF3CD', text: '#856404' },
     'Alarm':     { bg: '#F8D7DA', text: '#721C24' },
@@ -2253,7 +2302,35 @@ async function exportPDF(recordId, mainWindow) {
     const globalFreq = mulData[`${groupPrefix}_global_freq`]?.frequency;
     const titleText = (globalFreq && globalFreq !== 'undefined') ? `${groupLabel} (Winding Freq: ${globalFreq})` : groupLabel;
 
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(BLUE).text(titleText, 40);
+    // Winding tests share one ambient temperature — pull the first non-empty temp so we can
+    // render it once as a chip beside the group title (matches the insulation-side TEMP chip).
+    const resolveGroupTemp = () => {
+      for (const key of Object.keys(mulData)) {
+        if (!key.startsWith(`${groupPrefix}_`)) continue;
+        if (!(key.includes('_res_') || key.includes('_ind_') || key.includes('_cap_') || key.includes('_imp_'))) continue;
+        const t = mulData[key]?.temperature;
+        if (t !== undefined && t !== null && t !== '' && t !== 'undefined') return t;
+      }
+      return null;
+    };
+    const groupTemp = resolveGroupTemp();
+
+    const titleTopY = doc.y;
+    doc.fontSize(11).font('Helvetica-Bold').fillColor(BLUE).text(titleText, 40, titleTopY);
+
+    if (groupTemp !== null) {
+      // Right-aligned chip on the same baseline as the title.
+      const chipText = `Test Temp: ${groupTemp} C`;
+      doc.fontSize(8).font('Helvetica-Bold');
+      const chipTextW = doc.widthOfString(chipText);
+      const chipW = chipTextW + 14;
+      const chipH = 14;
+      const chipX = 40 + W - chipW;
+      const chipY = titleTopY;
+      doc.roundedRect(chipX, chipY, chipW, chipH, 3).fillAndStroke('#F1F5F9', '#CBD5E1');
+      doc.fillColor(DARK_GRAY).fontSize(8).font('Helvetica-Bold')
+        .text(chipText, chipX, chipY + 3, { width: chipW, align: 'center' });
+    }
     doc.moveDown(0.2);
 
     const resFreq = mulData[`${groupPrefix}_res_freq`]?.frequency;
@@ -2452,84 +2529,59 @@ async function exportPDF(recordId, mainWindow) {
     y += 14;
 
     // ─────────────────────────────────────────────
-    // Table 1: Winding Resistance (DCR)
+    // Combined DCR & ACR Winding Resistance — 7 cols (Phase | DCR | 5x ACR)
+    // Group temperature is shown once as a chip in the group header, so no per-row Temp column.
     // ─────────────────────────────────────────────
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('Winding Resistance (DCR)', 40, y);
+    const DCR_TINT = '#EFF6FF';   // very light blue for the DCR body cell
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text(`DCR & ACR Winding Resistance (Ohms)${record.correctWindingTo20 ? ' @20°C' : ''}`, 40, y);
     y += 11;
-    const resCols = [W * 0.4, W * 0.3, W * 0.3];
-    const resHeaders = ['Phase Line', `Resistance (DCR) (Ohms)${record.correctWindingTo20 ? ' @20°C' : ''}${cleanResFreq}`, 'Temperature (°C)'];
-    
-    doc.rect(40, y, W, 14).fill(BLUE);
-    let rx = 40;
-    resHeaders.forEach((h, idx) => {
-      doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(h, rx, y + 3.5, { width: resCols[idx], align: 'center' });
-      rx += resCols[idx];
-    });
-    y += 14;
+    // Columns: Phase Line | DCR (0Hz) | 100Hz | 120Hz | 1kHz | 10kHz | 100kHz
+    const combCols = [W * 0.22, W * 0.13, W * 0.13, W * 0.13, W * 0.13, W * 0.13, W * 0.13];
+    const combHeaders = ['Phase Line', 'DCR\n(0Hz)', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
 
-    let resAlternate = false;
-    standardPhases.forEach(phase => {
-      const rKey = `${groupPrefix}_res_${phase}`;
-      let rVal = (mulData[rKey]?.value !== undefined && mulData[rKey]?.value !== null && mulData[rKey]?.value !== '') ? parseFloat(mulData[rKey]?.value) : null;
-      let rTemp = mulData[rKey]?.temperature;
-
-      if (rTemp === 'undefined' || rTemp === null || rTemp === undefined || rTemp === '') rTemp = '—';
-      else rTemp = `${rTemp}°C`;
-
-      if (record.correctWindingTo20 && rVal !== null && !isNaN(rVal) && !isOverload(rVal, 'R')) {
-        const tempNum = isNaN(parseFloat(mulData[rKey]?.temperature)) ? 25 : parseFloat(mulData[rKey]?.temperature);
-        rVal = parseFloat((rVal * (254.5 / (234.5 + tempNum))).toFixed(3));
-      }
-
-      doc.rect(40, y, W, 12).fill(resAlternate ? LGRAY : '#FFFFFF');
-      rx = 40;
-      doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, rx + 6, y + 2, { width: resCols[0] - 12, align: 'left' });
-      rx += resCols[0];
-
-      let rDisplay = '—';
-      if (rVal !== undefined && rVal !== null && rVal !== '') {
-        rDisplay = isOverload(rVal, 'R') ? 'O.L' : String(rVal);
-      }
-      doc.font('Helvetica').fontSize(7.5);
-      doc.text(rDisplay, rx, y + 2, { width: resCols[1], align: 'center' });
-      rx += resCols[1];
-      doc.text(rTemp, rx, y + 2, { width: resCols[2], align: 'center' });
-
-      y += 12;
-      resAlternate = !resAlternate;
-    });
-
-    y += 10;
-
-    // ─────────────────────────────────────────────
-    // Table 1.5: AC Winding Resistance (ACR)
-    // ─────────────────────────────────────────────
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text('AC Winding Resistance (ACR) (Ohms)', 40, y);
-    y += 11;
-    const acrHeaders = ['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    const acrCols = [W * 0.25, W * 0.15, W * 0.15, W * 0.15, W * 0.15, W * 0.15];
-
-    doc.rect(40, y, W, 14).fill(BLUE);
+    // Single blue header band spans all columns.
+    doc.rect(40, y, W, 18).fill(BLUE);
+    const dcrHeaderX = 40 + combCols[0];
     let ax = 40;
-    acrHeaders.forEach((h, idx) => {
-      doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(h, ax, y + 3.5, { width: acrCols[idx], align: 'center' });
-      ax += acrCols[idx];
+    combHeaders.forEach((h, idx) => {
+      doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(h, ax, y + 3, { width: combCols[idx], align: 'center' });
+      ax += combCols[idx];
     });
-    y += 14;
+    y += 18;
 
-    let acrAlternate = false;
+    let combAlt = false;
     ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach(phase => {
-      doc.rect(40, y, W, 12).fill(acrAlternate ? LGRAY : '#FFFFFF');
-      ax = 40;
-      doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, ax + 6, y + 2, { width: acrCols[0] - 12, align: 'left' });
-      ax += acrCols[0];
+      // Row backgrounds — normal alternating, DCR cell overlaid with a light-blue tint to distinguish it.
+      doc.rect(40, y, W, 12).fill(combAlt ? LGRAY : '#FFFFFF');
+      doc.rect(dcrHeaderX, y, combCols[1], 12).fill(DCR_TINT);
 
+      ax = 40;
+      doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, ax + 6, y + 2, { width: combCols[0] - 12, align: 'left' });
+      ax += combCols[0];
+
+      // DCR (spot) value — group temperature shown once in the header chip, not per-row.
+      const dcrKey = `${groupPrefix}_res_${phase}`;
+      let dcrVal = (mulData[dcrKey]?.value !== undefined && mulData[dcrKey]?.value !== null && mulData[dcrKey]?.value !== '') ? parseFloat(mulData[dcrKey]?.value) : null;
+      const rawTemp = mulData[dcrKey]?.temperature;
+      if (record.correctWindingTo20 && dcrVal !== null && !isNaN(dcrVal) && !isOverload(dcrVal, 'R')) {
+        const tempNum = isNaN(parseFloat(rawTemp)) ? 25 : parseFloat(rawTemp);
+        dcrVal = parseFloat((dcrVal * (254.5 / (234.5 + tempNum))).toFixed(3));
+      }
+      let dcrDisp = '—';
+      if (dcrVal !== undefined && dcrVal !== null && dcrVal !== '') {
+        dcrDisp = isOverload(dcrVal, 'R') ? 'O.L' : String(dcrVal);
+      }
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(DARK_GRAY);
+      doc.text(dcrDisp, ax, y + 2, { width: combCols[1], align: 'center' });
+      ax += combCols[1];
+
+      // ACR values at each frequency
       doc.font('Helvetica').fontSize(7.5);
       ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach((f, fIdx) => {
         const key = `${groupPrefix}_res_${phase}_${f}`;
         const cellData = mulData[key];
         let val = cellData?.value;
-        
+
         // Fallback to spot ACR if sweep is empty
         if (val === undefined || val === null || val === '') {
           const spotKey = `${groupPrefix}_res_${phase}`;
@@ -2549,12 +2601,12 @@ async function exportPDF(recordId, mainWindow) {
         }
 
         const displayVal = val !== undefined && val !== null && val !== '' ? (isOverload(val, 'R') ? 'O.L' : String(val)) : '—';
-        doc.text(displayVal, ax, y + 2, { width: acrCols[fIdx + 1], align: 'center' });
-        ax += acrCols[fIdx + 1];
+        doc.text(displayVal, ax, y + 2, { width: combCols[fIdx + 2], align: 'center' });
+        ax += combCols[fIdx + 2];
       });
 
       y += 12;
-      acrAlternate = !acrAlternate;
+      combAlt = !combAlt;
     });
 
     y += 10;
@@ -2670,8 +2722,9 @@ async function exportPDF(recordId, mainWindow) {
 
       const startY = doc.y;
 
-      const impCols = [W * 0.22, W * 0.21, W * 0.21, W * 0.18, W * 0.18];
-      const impHeaders = ['Phase Line', 'Z (Ohms)', 'Angle (°)', 'Frequency', 'Temp (°C)'];
+      // Temp column dropped — group temperature is shown once in the header chip.
+      const impCols = [W * 0.25, W * 0.25, W * 0.25, W * 0.25];
+      const impHeaders = ['Phase Line', 'Z (Ohms)', 'Angle (°)', 'Frequency'];
       let iy = startY;
       let ix = 40;
 
@@ -2699,11 +2752,6 @@ async function exportPDF(recordId, mainWindow) {
         } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
           zFreq = groupImpFreq;
         }
-        let zTemp = mulData[zKey]?.temperature !== undefined ? `${mulData[zKey].temperature}°C` : (mulData[degKey]?.temperature !== undefined ? `${mulData[degKey].temperature}°C` : '—');
-        if (zTemp.includes('undefined')) zTemp = '—';
-
-
-
         doc.rect(40, iy, W, 13).fill(impAlternate ? LGRAY : '#FFFFFF');
 
         ix = 40;
@@ -2716,8 +2764,6 @@ async function exportPDF(recordId, mainWindow) {
         doc.text(degVal !== undefined ? String(degVal) : '—', ix, iy + 2.5, { width: impCols[2], align: 'center' });
         ix += impCols[2];
         doc.text(String(zFreq), ix, iy + 2.5, { width: impCols[3], align: 'center' });
-        ix += impCols[3];
-        doc.text(String(zTemp), ix, iy + 2.5, { width: impCols[4], align: 'center' });
 
         iy += 13;
         impAlternate = !impAlternate;
@@ -2736,14 +2782,16 @@ async function exportPDF(recordId, mainWindow) {
     doc.y += 10;
   }
 
-  // Page 3: Rotor Winding Readings (Multimeter R/L/C)
-  doc.addPage();
-  drawHeader('ROTOR WINDING TEST');
-  drawWindingWGroup('Rotor Winding Readings', 'rotor');
-  if (record.correctWindingTo20) {
-    doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
-      .text('* Note: Rotor winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula.', 40, doc.y + 4, { width: W });
-    doc.y += 10;
+  // Page 3: Rotor Winding Readings (Multimeter R/L/C) — only when user opts in
+  if (includeRotor) {
+    doc.addPage();
+    drawHeader('ROTOR WINDING TEST');
+    drawWindingWGroup('Rotor Winding Readings', 'rotor');
+    if (record.correctWindingTo20) {
+      doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
+        .text('* Note: Rotor winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula.', 40, doc.y + 4, { width: W });
+      doc.y += 10;
+    }
   }
 
   // --- Winding Frequency Sweep Tables rendering in PDF ---
@@ -2912,11 +2960,11 @@ async function exportPDF(recordId, mainWindow) {
       drawSweepSectionWithChart('Stator AC Winding Resistance Frequency Sweep (Ohms)', 'stator', 'res', 'Ohms');
     }
 
-    if (hasRotorSweep) {
+    if (includeRotor && hasRotorSweep) {
       drawSweepSectionWithChart('Rotor Inductance Frequency Sweep (mH)', 'rotor', 'ind', 'mH');
     }
 
-    if (hasRotorResSweep) {
+    if (includeRotor && hasRotorResSweep) {
       drawSweepSectionWithChart('Rotor AC Winding Resistance Frequency Sweep (Ohms)', 'rotor', 'res', 'Ohms');
     }
   }
@@ -2954,35 +3002,30 @@ async function exportPDF(recordId, mainWindow) {
 
       const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
       const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-      const passStatus = getPassStatus(record.correctInsulationTo40 ? Rc40 : Rt);
 
       const rawRtStr = Rt !== null ? formatResistancePDF(Rt) : '—';
       const corrR40Str = Rc40 !== null ? formatResistancePDF(Rc40) : '—';
 
-      // Summary Card dimensions
+      // Summary Card dimensions — per-table Pass rating badge removed on request.
       const cardH = 34;
       doc.rect(40, doc.y, W, cardH).fill('#F8FAFC');
       doc.strokeColor('#CBD5E1').lineWidth(0.5);
       doc.rect(40, doc.y, W, cardH).stroke();
 
       const boxY = doc.y + 4;
-      // PI / DAR / DD
+      // PI / DAR / DD — DD only rendered on PI Test tables.
       doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('PI', 48, boxY).fontSize(9).text(pi, 48, boxY + 7);
       doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DAR', 88, boxY).fontSize(9).text(dar, 88, boxY + 7);
-      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DD', 128, boxY).fontSize(9).text(ddVal, 128, boxY + 7);
-      
+      if (tab === 'PI') {
+        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DD', 128, boxY).fontSize(9).text(ddVal, 128, boxY + 7);
+      }
+
       // Temp / Raw Rt
       doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('TEMP', 168, boxY).fontSize(9).text(`${tempVal}°C`, 168, boxY + 7);
       doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('RAW Rt', 218, boxY).fontSize(9).text(rawRtStr, 218, boxY + 7);
 
       // Corrected R40
       doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('CORRECTED R40', 308, boxY).fontSize(9).text(corrR40Str, 308, boxY + 7);
-
-      // Pass/Fail status badge
-      const badgeX = 405;
-      const badgeW = 100;
-      doc.rect(badgeX, boxY + 1, badgeW, 16).fill(passStatus.color);
-      doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(passStatus.text, badgeX, boxY + 5, { width: badgeW, align: 'center' });
 
       doc.y += cardH + 12;
 
@@ -2998,15 +3041,16 @@ async function exportPDF(recordId, mainWindow) {
 
       // ── Sample rows for the TABLE ──
       const MAX_TABLE_ROWS = 50;
-      let tableRows = rows;
+      const cleanRowsForTable = (tab === 'PI' || tab === 'DAR' || tab === 'RAMP') ? stripTrailingSummary(rows) : rows;
+      let tableRows = cleanRowsForTable;
       let truncated = false;
       if (tab === 'PI') {
-        tableRows = rows.filter(r => {
+        tableRows = cleanRowsForTable.filter(r => {
           const t = Math.round(r.time);
           return t !== 0 && (t === 1 || t % 15 === 0);
         });
       } else if (tab === 'DAR') {
-        tableRows = rows.filter(r => {
+        tableRows = cleanRowsForTable.filter(r => {
           const t = Math.round(r.time);
           return t !== 0 && (t === 1 || t % 5 === 0);
         });
@@ -3017,10 +3061,10 @@ async function exportPDF(recordId, mainWindow) {
           return t !== 0 && (t === 1 || t % 10 === 0);
         });
       } else {
-        if (rows.length > MAX_TABLE_ROWS) {
+        if (cleanRowsForTable.length > MAX_TABLE_ROWS) {
           truncated = true;
-          const step = (rows.length - 1) / (MAX_TABLE_ROWS - 1);
-          tableRows = Array.from({ length: MAX_TABLE_ROWS }, (_, i) => rows[Math.round(i * step)]);
+          const step = (cleanRowsForTable.length - 1) / (MAX_TABLE_ROWS - 1);
+          tableRows = Array.from({ length: MAX_TABLE_ROWS }, (_, i) => cleanRowsForTable[Math.round(i * step)]);
         }
       }
 
@@ -3073,8 +3117,12 @@ async function exportPDF(recordId, mainWindow) {
       }
 
       doc.rect(40, y, leftW, 14).fill('#F1F5F9');
+      // DD only shown for PI Test — omitted in DAR/SV/RAMP coefficient line.
+      const coeffText = tab === 'PI'
+        ? `Coefficients:  PI = ${pi}   |   DAR = ${dar}   |   DD = ${ddVal}`
+        : `Coefficients:  PI = ${pi}   |   DAR = ${dar}`;
       doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold')
-        .text(`Coefficients:  PI = ${pi}   |   DAR = ${dar}   |   DD = ${ddVal}`, 46, y + 3.5, { width: leftW - 12 });
+        .text(coeffText, 46, y + 3.5, { width: leftW - 12 });
       y += 18;
 
       // 2. RIGHT COLUMN: Chart — switch back to chart page to guarantee same-page rendering
@@ -3090,7 +3138,7 @@ async function exportPDF(recordId, mainWindow) {
         if (summaryRows.length > 0) {
           const gap = 15;
           
-          // Chart 1: Current vs Time (Transient)
+          // Chart 1: Current vs Time (Transient) — dense sample count, no dots
           drawPDFChart(
             doc,
             'SV Transient Current Plot',
@@ -3099,7 +3147,8 @@ async function exportPDF(recordId, mainWindow) {
             'time', 'current',
             'Time (s)', 'Current (uA)',
             false,
-            runTemp
+            runTemp,
+            false
           );
           
           // Chart 2: Step Current Plot
@@ -3134,7 +3183,8 @@ async function exportPDF(recordId, mainWindow) {
             'time', 'current',
             'Time (s)', 'Current (uA)',
             false,
-            runTemp
+            runTemp,
+            false
           );
         }
       } else {
@@ -3145,9 +3195,13 @@ async function exportPDF(recordId, mainWindow) {
 
         let chartRows = rows;
         if (tab === 'PI') {
-          chartRows = rows.filter(r => r.time !== 0);
+          // Strip the 2 TΩ stabilization spike so drawPDFChart's max-based scaling
+          // shows the real resistance range instead of collapsing the line to y≈0.
+          chartRows = stripEarlyTransients(stripTrailingSummary(rows).filter(r => r.time !== 0));
         } else if (tab === 'DAR') {
-          chartRows = filterOutliersForGraph(rows);
+          chartRows = filterOutliersForGraph(stripEarlyTransients(stripTrailingSummary(rows)));
+        } else if (tab === 'RAMP') {
+          chartRows = stripEarlyTransients(stripTrailingSummary(rows));
         }
 
         drawPDFChart(
@@ -3158,7 +3212,8 @@ async function exportPDF(recordId, mainWindow) {
           xAxisKey, yAxisKey,
           xAxisLabel, yAxisLabel,
           record.correctInsulationTo40,
-          runTemp
+          runTemp,
+          tab !== 'PI'
         );
       }
 

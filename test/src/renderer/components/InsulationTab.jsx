@@ -39,6 +39,18 @@ function computeAxisDomain(values, { clampMinZero = false } = {}) {
   return [min, max];
 }
 
+// Megger appends a summary block (30s / 60s / 600s spot readings) after the main capture.
+// Drop everything from the first non-increasing time onward — those rows are for calc only, not display.
+const stripTrailingSummary = (rows) => {
+  if (!rows || rows.length === 0) return rows || [];
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i].time) <= Number(rows[i - 1].time)) {
+      return rows.slice(0, i);
+    }
+  }
+  return rows;
+};
+
 const TEST_METRIC_TIMES = {
   PI:   { dar: [30, 60], pi: [60, 600] },
   DAR:  { dar: [30, 60], pi: null },
@@ -546,9 +558,10 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
   const chartRows = useMemo(() => {
     const tv = isNaN(parseFloat(getRunTemperature(selectedTable))) ? 25 : parseFloat(getRunTemperature(selectedTable));
     const kt = Math.pow(0.5, (40 - tv) / 10);
+    const visibleRows = stripTrailingSummary(rows);
     let base = correctInsulationTo40
-      ? rows.map(r => ({ ...r, resistance: Math.round(r.resistance * kt) }))
-      : rows.map(r => ({ ...r }));
+      ? visibleRows.map(r => ({ ...r, resistance: Math.round(r.resistance * kt) }))
+      : visibleRows.map(r => ({ ...r }));
     if (base.length > 0) {
       const tMin = Math.min(...base.map(r => r.time));
       base = base.map(r => ({ ...r, plotTime: r.time - tMin }));
@@ -612,7 +625,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
     const currentRun  = runs.find(r => r.id === activeRunId) || runs[0] || { id: activeRunId, name: 'Run 1', rows: [] };
     const tableId     = currentRun.id;
     const isActive    = selectedTable === tableId;
-    const tableRows   = currentRun.rows;
+    const tableRows   = stripTrailingSummary(currentRun.rows);
 
     return (
       <div
@@ -898,7 +911,7 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
               </div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
                 {/* Temperature card */}
-                <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5, minWidth: 140 }}>
+                <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 5, minWidth: 170 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                     <span style={{ fontSize: 13 }}>🌡️</span>
                     <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: 0.6, textTransform: 'uppercase' }}>Test Temperature</span>
@@ -906,10 +919,11 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 3 }}>
                     <input
                       type="number"
+                      step="0.1"
                       value={getRunTemperature(selectedTable)}
                       onChange={e => handleTempChange(e.target.value)}
                       style={{
-                        width: 56, border: 'none', outline: 'none',
+                        width: 96, border: 'none', outline: 'none',
                         fontSize: 24, fontWeight: 800,
                         color: `hsl(${120 - Math.min(tempVal, 100) * 1.2}, 70%, 40%)`,
                         fontFamily: 'monospace', background: 'transparent', padding: 0,

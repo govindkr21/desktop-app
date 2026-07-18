@@ -27,8 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearRecordTestData: (recordId)                      => ipcRenderer.invoke('db:clearRecordTestData', recordId),
 
   // ── Reports ──────────────────────────────────
-  exportExcel: (recordId, chartImages) => ipcRenderer.invoke('report:exportExcel', recordId, chartImages),
-  exportPDF:   (recordId) => ipcRenderer.invoke('report:exportPDF', recordId),
+  exportExcel: (recordId, chartImages, opts) => ipcRenderer.invoke('report:exportExcel', recordId, chartImages, opts),
+  exportPDF:   (recordId, opts) => ipcRenderer.invoke('report:exportPDF', recordId, opts),
 
   // ── Shell ────────────────────────────────────
   openPath: (filePath) => ipcRenderer.invoke('shell:openPath', filePath),

@@ -156,18 +156,18 @@ ipcMain.handle('db:getMultimeterData', (_, recordId) => db().getMultimeterData(r
 ipcMain.handle('db:clearRecordTestData', (_, recordId) => db().clearRecordTestData(recordId));
 
 // ── Reports ───────────────────────────────────
-ipcMain.handle('report:exportExcel', async (_, recordId, chartImages) => {
+ipcMain.handle('report:exportExcel', async (_, recordId, chartImages, opts) => {
   try {
-    return await reports.exportExcel(recordId, mainWindow, chartImages);
+    return await reports.exportExcel(recordId, mainWindow, chartImages, opts);
   } catch (err) {
     console.error('Export Excel failed:', err);
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('report:exportPDF', async (_, recordId) => {
+ipcMain.handle('report:exportPDF', async (_, recordId, opts) => {
   try {
-    return await reports.exportPDF(recordId, mainWindow);
+    return await reports.exportPDF(recordId, mainWindow, opts);
   } catch (err) {
     console.error('Export PDF failed:', err);
     return { success: false, error: err.message };

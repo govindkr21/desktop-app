@@ -3,6 +3,43 @@ import { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, ReferenceArea, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Label } from 'recharts';
 import logo from '../../assets/logo.png';
 
+// Megger appends a "summary" block (30s, 60s, 600s spot readings) after the main capture.
+// Detect it as the first row where time stops increasing — everything from that point on is
+// display-noise for the graph/table (but the raw rows are still available for DAR/PI calc).
+const stripTrailingSummary = (rows) => {
+  if (!rows || rows.length === 0) return [];
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i].time) <= Number(rows[i - 1].time)) {
+      return rows.slice(0, i);
+    }
+  }
+  return rows;
+};
+
+// Drop the first-few-seconds voltage-stabilization transient (matches InsulationTab).
+// Without this the chart auto-scale is dominated by a 2 TΩ (2e6 MΩ) spike at t≈1s
+// and the meaningful data down at ~15k MΩ hugs the x-axis and reads as flat.
+const stripEarlyTransients = (rows) => (rows || []).filter(r => {
+  const t = Number(r?.time);
+  const R = Number(r?.resistance);
+  const I = Number(r?.current);
+  if (t <= 2 && (R >= 1e6 || I <= 0.005 || R <= 0)) return false;
+  return true;
+});
+
+// Compact tick label formatter for axes with wildly varying magnitudes
+// (mH sweeps can range from 1e-4 to 1e3). Scientific notation for tiny/huge
+// values keeps labels inside the axis gutter; fixed decimals in the normal range.
+const formatAxisTick = (v) => {
+  if (v === 0) return '0';
+  const abs = Math.abs(v);
+  if (abs < 0.01 || abs >= 100000) return v.toExponential(2);
+  if (abs < 1) return v.toFixed(3);
+  if (abs < 10) return v.toFixed(2);
+  if (abs < 100) return v.toFixed(1);
+  return String(Math.round(v));
+};
+
 const splitSVData = (rows) => {
   if (!rows || rows.length === 0) return { transientRows: [], summaryRows: [] };
   let splitIndex = -1;
@@ -33,6 +70,8 @@ const PolarPlot = ({ data, size = 180 }) => {
   const centerX = size / 2;
   const centerY = size / 2 + 10;
   const maxR = size / 2 - 25;
+  const legendH = 32; // room below the plot for legend swatches
+  const svgH = size + legendH;
 
   const validPoints = data.filter(d => d.z !== null && d.z !== undefined && !isNaN(d.z));
   const maxZ = Math.max(...validPoints.map(d => d.z)) * 1.15 || 10;
@@ -47,7 +86,28 @@ const PolarPlot = ({ data, size = 180 }) => {
   };
 
   return (
-    <svg width={size} height={size} style={{ background: '#f8fafc', borderRadius: 8, border: '1px solid #cbd5e1' }}>
+    <svg width={size} height={svgH} style={{ background: '#f8fafc', borderRadius: 8, border: '1px solid #cbd5e1' }}>
+      {/* Per-vector arrowhead markers — one per phase color so the arrowhead matches the line color */}
+      <defs>
+        {validPoints.map(pt => {
+          const color = phaseColors[pt.phase] || '#64748b';
+          return (
+            <marker
+              key={`arr-${pt.phase}`}
+              id={`arrow-${pt.phase}`}
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 Z" fill={color} />
+            </marker>
+          );
+        })}
+      </defs>
+
       {/* Title */}
       <text x={centerX} y="15" fontSize="9" fontWeight="bold" fill="#1e3a8a" textAnchor="middle">
         Impedance Polar Plot
@@ -58,7 +118,7 @@ const PolarPlot = ({ data, size = 180 }) => {
       <circle cx={centerX} cy={centerY} r={maxR * 0.66} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
       <circle cx={centerX} cy={centerY} r={maxR} fill="none" stroke="#94a3b8" strokeWidth="0.5" />
 
-      {/* Axis lines */}
+      {/* Axis guide lines */}
       {[0, 45, 90, 135, 180, 225, 270, 315].map(angle => {
         const rad = (angle * Math.PI) / 180;
         const endX = centerX + maxR * Math.cos(rad);
@@ -98,7 +158,7 @@ const PolarPlot = ({ data, size = 180 }) => {
         );
       })}
 
-      {/* Plot points */}
+      {/* Vectors — line from center to (r, θ), coloured per phase, arrowhead at the tip */}
       {validPoints.map(pt => {
         const r = (pt.z / maxZ) * maxR;
         const rad = (pt.deg * Math.PI) / 180;
@@ -106,20 +166,61 @@ const PolarPlot = ({ data, size = 180 }) => {
         const py = centerY - r * Math.sin(rad);
         const color = phaseColors[pt.phase] || '#64748b';
         return (
-          <g key={pt.phase}>
-            <circle cx={px} cy={py} r="3.5" fill={color} />
-            <text
-              x={px + 5}
-              y={py - 3}
-              fontSize="7"
-              fontWeight="bold"
-              fill={color}
-            >
-              {pt.phase}
-            </text>
-          </g>
+          <line
+            key={pt.phase}
+            x1={centerX}
+            y1={centerY}
+            x2={px}
+            y2={py}
+            stroke={color}
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            markerEnd={`url(#arrow-${pt.phase})`}
+          />
         );
       })}
+
+      {/* Legend row — sits below the plot, inside the SVG so it's captured in exports */}
+      {(() => {
+        const swatchW = 8;
+        const gap = 4;
+        const itemGap = 10;
+        // Measure text width crudely (fontSize 7 → ~4px per char)
+        const items = validPoints.map(pt => ({
+          phase: pt.phase,
+          color: phaseColors[pt.phase] || '#64748b',
+          w: swatchW + gap + (pt.phase.length * 4.2)
+        }));
+        const totalW = items.reduce((a, i) => a + i.w, 0) + Math.max(0, items.length - 1) * itemGap;
+        let cursorX = (size - totalW) / 2;
+        const rowY = size + 8;
+        return items.map(it => {
+          const startX = cursorX;
+          cursorX += it.w + itemGap;
+          return (
+            <g key={`legend-${it.phase}`}>
+              <line
+                x1={startX}
+                y1={rowY + 4}
+                x2={startX + swatchW}
+                y2={rowY + 4}
+                stroke={it.color}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+              <text
+                x={startX + swatchW + gap}
+                y={rowY + 6}
+                fontSize="7"
+                fontWeight="bold"
+                fill={it.color}
+              >
+                {it.phase}
+              </text>
+            </g>
+          );
+        });
+      })()}
     </svg>
   );
 };
@@ -177,7 +278,7 @@ const formatStepVoltage = (str) => {
 
 const getPassStatus = (Rc40) => {
   if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b', bg: '#f1f5f9' };
-  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7' };
+  if (Rc40 >= 100) return { text: 'Pass (Good)', color: '#16a34a', bg: '#dcfce7' };
   if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb', bg: '#dbeafe' };
   return { text: 'Fail (Low Insulation)', color: '#dc2626', bg: '#fee2e2' };
 };
@@ -188,6 +289,7 @@ export default function ReportScreen({ record, onChange }) {
   const [exporting, setExporting] = useState('');
   const [message, setMessage] = useState(null);
   const [lastFilePath, setLastFilePath] = useState(null);
+  const [includeRotor, setIncludeRotor] = useState(true);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -451,9 +553,9 @@ export default function ReportScreen({ record, onChange }) {
           insulation: insImages,
           polar: polarImages
         };
-        result = await api.exportExcel(record.id, chartImages);
+        result = await api.exportExcel(record.id, chartImages, { includeRotor });
       } else {
-        result = await api.exportPDF(record.id);
+        result = await api.exportPDF(record.id, { includeRotor });
       }
 
       if (result.success) {
@@ -601,27 +703,51 @@ export default function ReportScreen({ record, onChange }) {
       const obj = { name: f };
       tablePhases.forEach(phase => {
         const cellData = mulData[`${group}_${type}_${phase}_${f}`];
-        if (cellData && cellData.value !== undefined) {
-          let val = cellData.value;
-          if (type === 'res' && record?.correctWindingTo20) {
-            const tempNum = isNaN(parseFloat(cellData.temperature)) ? 25 : parseFloat(cellData.temperature);
-            val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+        if (cellData && cellData.value !== undefined && cellData.value !== null && cellData.value !== '') {
+          // DB values come back as strings — coerce so numeric ops (min/max, padding) don't concat.
+          let val = parseFloat(cellData.value);
+          if (!isNaN(val)) {
+            if (type === 'res' && record?.correctWindingTo20) {
+              const tempNum = isNaN(parseFloat(cellData.temperature)) ? 25 : parseFloat(cellData.temperature);
+              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
+            }
+            obj[phase] = val;
           }
-          obj[phase] = val;
         }
       });
       return obj;
     });
 
     let minVal = Infinity;
+    let maxVal = -Infinity;
     chartData.forEach(d => {
       tablePhases.forEach(phase => {
-        if (d[phase] !== undefined && d[phase] < minVal) {
-          minVal = d[phase];
+        const v = d[phase];
+        if (v !== undefined) {
+          if (v < minVal) minVal = v;
+          if (v > maxVal) maxVal = v;
         }
       });
     });
     const minAreaY = minVal < 0 ? minVal - 1 : 0;
+
+    // Auto-scaled Y domain — 15% padding on both sides so the top-most value
+    // (e.g. 122 mH) is not clipped by a Recharts default nice-max like 100.
+    const hasRange = isFinite(minVal) && isFinite(maxVal);
+    let yDomain;
+    if (hasRange) {
+      const span = maxVal - minVal;
+      const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(maxVal) * 0.1, 0.1);
+      const rawMin = minVal - pad;
+      const rawMax = maxVal + pad;
+      const yMin = minVal < 0
+        ? Math.floor(Math.min(minAreaY, rawMin))
+        : Math.max(0, Math.floor(rawMin));
+      const yMax = Math.ceil(rawMax);
+      yDomain = [yMin, yMax];
+    } else {
+      yDomain = ['auto', 'auto'];
+    }
 
     return (
       <div key={`${group}_${type}_sweep`} style={{ marginBottom: 20, border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
@@ -678,10 +804,18 @@ export default function ReportScreen({ record, onChange }) {
           </div>
           <div id={`chart-${group}-${type}`} style={{ height: 160, width: '100%', minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -25, bottom: 5 }}>
+              <LineChart data={chartData} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="name" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
-                <YAxis style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
+                <YAxis
+                  type="number"
+                  domain={yDomain}
+                  allowDecimals
+                  allowDataOverflow={false}
+                  width={48}
+                  tickFormatter={formatAxisTick}
+                  style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}
+                />
                 {minAreaY < 0 && (
                   <ReferenceArea
                     y1={minAreaY}
@@ -719,13 +853,14 @@ export default function ReportScreen({ record, onChange }) {
                   return (
                     <Line
                       key={phase}
-                      type="monotone"
+                      type="linear"
                       dataKey={phase}
                       name={`Phase ${phase}`}
                       stroke={color}
                       activeDot={{ r: 4 }}
                       strokeWidth={1.5}
                       dot={{ r: 2 }}
+                      connectNulls
                     />
                   );
                 })}
@@ -866,7 +1001,7 @@ export default function ReportScreen({ record, onChange }) {
             />
           </div>
           {/* Dropdowns */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
             {[
               { key: 'condInsulation', label: 'Insulation' },
               { key: 'condResistance', label: 'Resistance' },
@@ -879,7 +1014,7 @@ export default function ReportScreen({ record, onChange }) {
               if (c.key === 'condInsulation') {
                 const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
                 if (hasIns) {
-                  let overallPass = 'Pass (Excellent)';
+                  let overallPass = 'Pass (Good)';
                   Object.keys(insData).forEach(tab => {
                     const tabData = insData[tab] || {};
                     const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
@@ -896,19 +1031,19 @@ export default function ReportScreen({ record, onChange }) {
                       else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
                     });
                   });
-                  autoVal = overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+                  autoVal = overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
                 }
               } else if (c.key === 'condResistance') {
                 if (statorResImb !== null) {
-                  autoVal = statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm');
                 }
               } else if (c.key === 'condInductance') {
                 if (statorIndImb !== null) {
-                  autoVal = statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm');
                 }
               } else if (c.key === 'condImpedance') {
                 if (statorImpImb !== null) {
-                  autoVal = statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
                 } else {
                   const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
                   if (hasImp) autoVal = 'Normal';
@@ -925,7 +1060,7 @@ export default function ReportScreen({ record, onChange }) {
                   });
                 });
                 if (maxSwImb > 0) {
-                  autoVal = maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm');
                 }
               }
 
@@ -940,13 +1075,13 @@ export default function ReportScreen({ record, onChange }) {
                     onChange={e => onChange(c.key, e.target.value)}
                     style={{
                       fontSize: 10, padding: '4px 6px', borderRadius: 4, border: '1px solid #cbd5e1',
-                      background: displayVal === 'Excellent' ? '#dcfce7' : displayVal === 'Normal' ? '#dbeafe' : displayVal === 'Caution' ? '#fef9c3' : displayVal === 'Alarm' ? '#fee2e2' : displayVal === 'Observe' ? '#f3e8ff' : '#f1f5f9',
-                      color: displayVal === 'Excellent' ? '#166534' : displayVal === 'Normal' ? '#1d4ed8' : displayVal === 'Caution' ? '#854d0e' : displayVal === 'Alarm' ? '#991b1b' : displayVal === 'Observe' ? '#6b21a8' : '#475569',
+                      background: displayVal === 'Good' ? '#dcfce7' : displayVal === 'Normal' ? '#dbeafe' : displayVal === 'Caution' ? '#fef9c3' : displayVal === 'Alarm' ? '#fee2e2' : displayVal === 'Observe' ? '#f3e8ff' : '#f1f5f9',
+                      color: displayVal === 'Good' ? '#166534' : displayVal === 'Normal' ? '#1d4ed8' : displayVal === 'Caution' ? '#854d0e' : displayVal === 'Alarm' ? '#991b1b' : displayVal === 'Observe' ? '#6b21a8' : '#475569',
                       fontWeight: 'bold', cursor: 'pointer'
                     }}
                   >
                     <option value="">Auto ({autoVal})</option>
-                    <option value="Excellent">Excellent</option>
+                    <option value="Good">Good</option>
                     <option value="Normal">Normal</option>
                     <option value="Caution">Caution</option>
                     <option value="Alarm">Alarm</option>
@@ -1197,7 +1332,7 @@ export default function ReportScreen({ record, onChange }) {
 
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>ELECTRICAL MOTOR TEST REPORT</h3>
-              <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>Offline Calibration & Diagnostic Suite</p>
+              <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>Testing & Diagnostic Suite PdM-S411</p>
             </div>
           </div>
           <div style={{ textAlign: 'right', fontSize: 11, color: '#64748b' }}>
@@ -1259,7 +1394,7 @@ export default function ReportScreen({ record, onChange }) {
             <h4 style={{ fontSize: 11, fontWeight: 800, color: '#60a5fa', borderBottom: '1px solid #e2e8f0', paddingBottom: 4, marginTop: 0, marginBottom: 6 }}>🔌 TESTING CONDITIONS (L4)</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 10, color: '#334155' }}>
               <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Location:</span> <strong>{record?.testingLocation || '—'}</strong></div>
-              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Wire Marks:</span> <strong>{`${record?.wireMarkingT1 || 'T1'}/${record?.wireMarkingT2 || 'T2'}/${record?.wireMarkingT3 || 'T3'}`}</strong></div>
+              <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>Wire Marks:</span> <strong>{`T1: ${record?.wireMarkingT1 || '—'}, T2: ${record?.wireMarkingT2 || '—'}, T3: ${record?.wireMarkingT3 || '—'}`}</strong></div>
               <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>PI V:</span> <strong>{piVolts}</strong></div>
               <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>DAR V:</span> <strong>{darVolts}</strong></div>
               <div><span style={{ color: '#94a3b8', fontWeight: 600 }}>STEP V:</span> <strong>{stepVolts}</strong></div>
@@ -1300,7 +1435,7 @@ export default function ReportScreen({ record, onChange }) {
                     { key: 'condInsulation', auto: () => {
                       const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
                       if (!hasIns) return '—';
-                      let overallPass = 'Pass (Excellent)';
+                      let overallPass = 'Pass (Good)';
                       Object.keys(insData).forEach(tab => {
                         const tabData = insData[tab] || {};
                         const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
@@ -1317,13 +1452,13 @@ export default function ReportScreen({ record, onChange }) {
                           else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
                         });
                       });
-                      return overallPass.includes('Excellent') ? 'Excellent' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+                      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
                     }},
-                    { key: 'condResistance', auto: () => statorResImb !== null ? (statorResImb < 2 ? 'Excellent' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—' },
-                    { key: 'condInductance', auto: () => statorIndImb !== null ? (statorIndImb < 2 ? 'Excellent' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—' },
+                    { key: 'condResistance', auto: () => statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—' },
+                    { key: 'condInductance', auto: () => statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—' },
                     { key: 'condImpedance', auto: () => {
                       if (statorImpImb !== null) {
-                        return statorImpImb < 2 ? 'Excellent' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+                        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
                       }
                       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
                       return hasImp ? 'Normal' : '—';
@@ -1339,21 +1474,21 @@ export default function ReportScreen({ record, onChange }) {
                           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
                         });
                       });
-                      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Excellent' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+                      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
                     }}
                   ].map(c => {
                     const autoVal = c.auto();
                     const val = record?.[c.key] || autoVal;
                     
                     const bgColors = {
-                      'Excellent': '#dcfce7',
+                      'Good': '#dcfce7',
                       'Normal': '#dbeafe',
                       'Caution': '#fef9c3',
                       'Alarm': '#fee2e2',
                       'Observe': '#f3e8ff'
                     };
                     const textColors = {
-                      'Excellent': '#155724',
+                      'Good': '#155724',
                       'Normal': '#004085',
                       'Caution': '#856404',
                       'Alarm': '#721c24',
@@ -1402,10 +1537,65 @@ export default function ReportScreen({ record, onChange }) {
               const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
               const capacitancePhases = ['123-GND', '1-GND', '2-GND', '3-GND', '1-2', '1-3', '2-3'];
 
+              // Pick 100Hz if any phase has data there; else fall through to the next available sweep frequency.
+              const pickEffectiveFreq = (kind) => {
+                const priority = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+                for (const f of priority) {
+                  const hit = standardPhases.some(p => {
+                    const v = mulData[`${group}_${kind}_${p}_${f}`]?.value;
+                    return v !== undefined && v !== null && v !== '';
+                  });
+                  if (hit) return f;
+                }
+                return '100Hz';
+              };
+              const acrFreq = pickEffectiveFreq('res');
+              const indFreqSummary = pickEffectiveFreq('ind');
+
+              const isRotor = group === 'rotor';
+
+              // Winding tests within a group share one ambient temperature — pull the first
+              // non-empty temperature from any measured field and show it once as a header chip
+              // (matches the 🌡️ TEMP chip style used on the Insulation Resistance side).
+              const groupTemp = (() => {
+                for (const key of Object.keys(mulData)) {
+                  if (!key.startsWith(`${group}_`)) continue;
+                  if (!(key.includes('_res_') || key.includes('_ind_') || key.includes('_cap_') || key.includes('_imp_'))) continue;
+                  const t = mulData[key]?.temperature;
+                  if (t !== undefined && t !== null && t !== '' && t !== 'undefined') return t;
+                }
+                return null;
+              })();
+
               return (
                 <div key={group} style={{ marginBottom: 24, border: '1px solid #cbd5e1', borderRadius: 8, padding: 16, background: '#f8fafc' }}>
-                  <h5 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', margin: '0 0 12px 0' }}>{titleText}</h5>
-                  
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 12px 0', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <h5 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>{titleText}</h5>
+                      {groupTemp !== null && (
+                        <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0', lineHeight: 1.1 }}>
+                          <span style={{ fontSize: 8, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>🌡️ Temp</span>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: '#0f172a', marginTop: 1 }}>{groupTemp}°C</span>
+                        </div>
+                      )}
+                    </div>
+                    {isRotor && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600, color: '#475569', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={includeRotor}
+                          onChange={(e) => setIncludeRotor(e.target.checked)}
+                          style={{ width: 16, height: 16, cursor: 'pointer' }}
+                        />
+                        Include in report
+                      </label>
+                    )}
+                  </div>
+                  {isRotor && !includeRotor ? (
+                    <div style={{ fontSize: 10, color: '#94a3b8', fontStyle: 'italic', padding: '8px 4px' }}>
+                      Rotor winding is excluded from the PDF/Excel export. Tick the box above to include it.
+                    </div>
+                  ) : (<>
                   {/* Summary Table */}
                   <div style={{ marginBottom: 16 }}>
                     <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Readings Summary Table</h6>
@@ -1423,8 +1613,8 @@ export default function ReportScreen({ record, onChange }) {
                         <tr style={{ background: '#cbd5e1', color: '#1e3a8a', fontSize: '9px', fontWeight: 'bold' }}>
                           <th style={{ padding: '4px 8px', textAlign: 'left' }}>Injected Freq.</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>0Hz</th>
-                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
-                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{acrFreq}</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>{indFreqSummary}</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanCapFreqText}</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanImpFreqText}</th>
                           <th style={{ padding: '4px 8px', textAlign: 'right' }}>{cleanImpFreqText}</th>
@@ -1441,8 +1631,8 @@ export default function ReportScreen({ record, onChange }) {
                           }
                           let dcrDisp = isOverload(dcrVal, 'R') ? 'O.L' : (dcrVal !== undefined && dcrVal !== null && dcrVal !== '' ? dcrVal : '—');
 
-                          // 2. ACR @100Hz
-                          const acrKey = `${group}_res_${phase}_100Hz`;
+                          // 2. ACR @ effective frequency (falls through to next available if 100Hz is empty)
+                          const acrKey = `${group}_res_${phase}_${acrFreq}`;
                           let acrVal = mulData[acrKey]?.value;
                           if (record?.correctWindingTo20 && acrVal !== undefined && acrVal !== null && acrVal !== '') {
                             const tempNum = isNaN(parseFloat(mulData[acrKey]?.temperature)) ? 25 : parseFloat(mulData[acrKey]?.temperature);
@@ -1450,8 +1640,8 @@ export default function ReportScreen({ record, onChange }) {
                           }
                           let acrDisp = isOverload(acrVal, 'R') ? 'O.L' : (acrVal !== undefined && acrVal !== null && acrVal !== '' ? acrVal : '—');
 
-                          // 3. L @100Hz
-                          const indKey = `${group}_ind_${phase}_100Hz`;
+                          // 3. L @ effective frequency
+                          const indKey = `${group}_ind_${phase}_${indFreqSummary}`;
                           let indVal = mulData[indKey]?.value;
                           let indDisp = isOverload(indVal, 'L') ? 'O.L' : (indVal !== undefined && indVal !== null && indVal !== '' ? indVal : '—');
 
@@ -1503,7 +1693,7 @@ export default function ReportScreen({ record, onChange }) {
                           const dcrSumImb = calculateImbalance(dcrVals[0], dcrVals[1], dcrVals[2]);
 
                           const acrVals = ['1-2', '1-3', '2-3'].map(phase => {
-                            const key = `${group}_res_${phase}_100Hz`;
+                            const key = `${group}_res_${phase}_${acrFreq}`;
                             let val = mulData[key]?.value;
                             if (record?.correctWindingTo20 && val !== undefined && val !== null && val !== '') {
                               const tempNum = isNaN(parseFloat(mulData[key]?.temperature)) ? 25 : parseFloat(mulData[key]?.temperature);
@@ -1513,7 +1703,7 @@ export default function ReportScreen({ record, onChange }) {
                           });
                           const acrSumImb = calculateImbalance(acrVals[0], acrVals[1], acrVals[2]);
 
-                          const indVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_ind_${phase}_100Hz`]?.value);
+                          const indVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_ind_${phase}_${indFreqSummary}`]?.value);
                           const indSumImb = calculateImbalance(indVals[0], indVals[1], indVals[2]);
 
                           const capVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_cap_${phase}`]?.value);
@@ -1552,110 +1742,46 @@ export default function ReportScreen({ record, onChange }) {
                     </table>
                   </div>
 
-                  {/* Grid for DCR and Capacitance */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                    
-                    {/* Winding Resistance (DCR) Table */}
-                    <div>
-                      <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Resistance (DCR) {cleanResFreq}</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
-                        <thead>
-                          <tr style={{ background: '#1e40af', color: '#fff' }}>
-                            <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Resistance (DCR) (Ω)</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Temp</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].map((phase, idx) => {
-                            const key = `${group}_res_${phase}`;
-                            let val = mulData[key]?.value;
-                            let temp = mulData[key]?.temperature;
-
-                            if (temp === 'undefined' || temp === null || temp === undefined || temp === '') temp = '—';
-                            else temp = `${temp}°C`;
-
-                            if (record?.correctWindingTo20 && val !== undefined && val !== null && val !== '') {
-                              const tempNum = isNaN(parseFloat(mulData[key]?.temperature)) ? 25 : parseFloat(mulData[key]?.temperature);
-                              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
-                            }
-                            
-                            let displayVal = isOverload(val, 'R') ? 'O.L' : (val !== undefined && val !== null && val !== '' ? val : '—');
-                            return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{temp}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Capacitance Table */}
-                    <div>
-                      <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Capacitance {cleanCapFreq}</h6>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
-                        <thead>
-                          <tr style={{ background: '#1e40af', color: '#fff' }}>
-                            <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Capacitance (nF)</th>
-                            <th style={{ padding: '4px 6px', textAlign: 'right' }}>Frequency</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(() => {
-                            const groupCapFreq = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
-                            return capacitancePhases.map((phase, idx) => {
-                              const key = `${group}_cap_${phase}`;
-                              const val = mulData[key]?.value;
-                              let freq = mulData[key]?.frequency;
-                              
-                              if (freq === 'undefined' || freq === null || freq === undefined || freq === '') {
-                                freq = (val !== undefined && val !== null && val !== '') ? groupCapFreq : '—';
-                              }
-                              
-                              const displayVal = isOverload(val, 'C') ? 'O.L' : (val !== undefined ? val : '—');
-                              return (
-                                <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                  <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                                  <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
-                                  <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freq}</td>
-                                </tr>
-                              );
-                            });
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
-
-                  </div>
-
-                  {/* AC Winding Resistance (ACR) Table */}
-                  <div style={{ marginTop: 16 }}>
-                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>AC Winding Resistance (ACR) (Ω)</h6>
+                  {/* Combined Winding Resistance (DCR + ACR) Table — DCR column highlighted */}
+                  <div>
+                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>DCR &amp; ACR Winding Resistance (Ω){record?.correctWindingTo20 ? ' @20°C' : ''}</h6>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
                       <thead>
                         <tr style={{ background: '#1e40af', color: '#fff' }}>
-                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100Hz</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>120Hz</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>1kHz</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>10kHz</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'left' }} rowSpan={2}>Phase Line</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'center' }}>DCR</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'center' }} colSpan={5}>ACR</th>
+                        </tr>
+                        <tr style={{ background: '#1e40af', color: '#fff', fontSize: 9 }}>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>0Hz</th>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>120Hz</th>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>1kHz</th>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>10kHz</th>
+                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>100kHz</th>
                         </tr>
                       </thead>
                       <tbody>
                         {['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].map((phase, idx) => {
+                          // DCR (spot) value — temperature now shown once in the group header chip.
+                          const dcrKey = `${group}_res_${phase}`;
+                          let dcrVal = mulData[dcrKey]?.value;
+                          const rawTemp = mulData[dcrKey]?.temperature;
+                          if (record?.correctWindingTo20 && dcrVal !== undefined && dcrVal !== null && dcrVal !== '') {
+                            const tempNum = isNaN(parseFloat(rawTemp)) ? 25 : parseFloat(rawTemp);
+                            dcrVal = parseFloat((dcrVal * (254.5 / (234.5 + tempNum))).toFixed(3));
+                          }
+                          const dcrDisp = isOverload(dcrVal, 'R') ? 'O.L' : (dcrVal !== undefined && dcrVal !== null && dcrVal !== '' ? dcrVal : '—');
+                          const rowBg = idx % 2 === 0 ? '#fff' : '#f8fafc';
                           return (
-                            <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                            <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: rowBg }}>
                               <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
+                              <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace', background: '#eff6ff', fontWeight: 700 }}>{dcrDisp}</td>
                               {['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
                                 const key = `${group}_res_${phase}_${f}`;
                                 const cellData = mulData[key];
                                 let val = cellData?.value;
-                                
+
                                 // Fallback to spot ACR if sweep is empty
                                 if (val === undefined || val === null || val === '') {
                                   const spotKey = `${group}_res_${phase}`;
@@ -1733,10 +1859,48 @@ export default function ReportScreen({ record, onChange }) {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Capacitance Table — moved to sit after Inductance */}
+                  <div style={{ marginTop: 16 }}>
+                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Capacitance {cleanCapFreq}</h6>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
+                      <thead>
+                        <tr style={{ background: '#1e40af', color: '#fff' }}>
+                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>Capacitance (nF)</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>Frequency</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const groupCapFreq = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
+                          return capacitancePhases.map((phase, idx) => {
+                            const key = `${group}_cap_${phase}`;
+                            const val = mulData[key]?.value;
+                            let freq = mulData[key]?.frequency;
+
+                            if (freq === 'undefined' || freq === null || freq === undefined || freq === '') {
+                              freq = (val !== undefined && val !== null && val !== '') ? groupCapFreq : '—';
+                            }
+
+                            const displayVal = isOverload(val, 'C') ? 'O.L' : (val !== undefined ? val : '—');
+                            return (
+                              <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
+                                <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
+                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freq}</td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                  </>)}
                 </div>
               );
             })}
-            
+
             {/* Phase Imbalance warning section */}
             {(statorResImb !== null || statorIndImb !== null || statorCapImb !== null || statorImpImb !== null ||
               rotorResImb !== null || rotorIndImb !== null || rotorCapImb !== null || rotorImpImb !== null) && (
@@ -1791,9 +1955,10 @@ export default function ReportScreen({ record, onChange }) {
 
             {/* Winding Impedance Tables */}
             {['stator', 'rotor'].map(group => {
+              if (group === 'rotor' && !includeRotor) return null;
               const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-              const hasGroupImp = impPhases.some(phase => 
-                mulData[`${group}_imp_${phase}_z`]?.value !== undefined || 
+              const hasGroupImp = impPhases.some(phase =>
+                mulData[`${group}_imp_${phase}_z`]?.value !== undefined ||
                 mulData[`${group}_imp_${phase}_deg`]?.value !== undefined
               );
               if (!hasGroupImp) return null;
@@ -1811,7 +1976,6 @@ export default function ReportScreen({ record, onChange }) {
                             <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
                             <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
                             <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
-                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Temp (°C)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1829,8 +1993,6 @@ export default function ReportScreen({ record, onChange }) {
                             } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
                               freq = groupImpFreq;
                             }
-                            const temp = mulData[`${group}_imp_${phase}_z`]?.temperature || mulData[`${group}_imp_${phase}_deg`]?.temperature || '';
-                            
                             return (
                               <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
                                 <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
@@ -1841,7 +2003,6 @@ export default function ReportScreen({ record, onChange }) {
                                   {degVal !== undefined ? degVal : '—'}
                                 </td>
                                 <td style={{ padding: '5px 8px', textAlign: 'right' }}>{freq}</td>
-                                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{temp ? `${temp}°C` : '—'}</td>
                               </tr>
                             );
                           })}
@@ -1873,7 +2034,7 @@ export default function ReportScreen({ record, onChange }) {
                 </div>
               );
             })}
-            
+
             {/* Frequency Sweep Tables */}
             {(hasLStatorSweep || hasLRotorSweep || hasRStatorSweep || hasRRotorSweep) && (
               <div style={{ marginTop: 20 }}>
@@ -1883,8 +2044,8 @@ export default function ReportScreen({ record, onChange }) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                   {renderSweepTable('Stator Inductance Sweep (mH)', 'stator', 'ind')}
                   {renderSweepTable('Stator AC Winding Resistance Sweep (Ω)', 'stator', 'res')}
-                  {renderSweepTable('Rotor Inductance Sweep (mH)', 'rotor', 'ind')}
-                  {renderSweepTable('Rotor AC Winding Resistance Sweep (Ω)', 'rotor', 'res')}
+                  {includeRotor && renderSweepTable('Rotor Inductance Sweep (mH)', 'rotor', 'ind')}
+                  {includeRotor && renderSweepTable('Rotor AC Winding Resistance Sweep (Ω)', 'rotor', 'res')}
                 </div>
               </div>
             )}
@@ -1935,7 +2096,6 @@ export default function ReportScreen({ record, onChange }) {
                               const rawRtStr = Rt !== null ? formatResistance(Rt) : '—';
                               const corrR40Str = Rc40 !== null ? formatResistance(Rc40) : '—';
 
-                              const passRating = getPassStatus(record?.correctInsulationTo40 ? Rc40 : Rt);
                               const ddVal = rows.length > 2 ? '1.38' : '—';
 
                               return (
@@ -1959,10 +2119,12 @@ export default function ReportScreen({ record, onChange }) {
                                     <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{dar}</span>
                                   </div>
 
-                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                                    <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>DD</span>
-                                    <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{ddVal}</span>
-                                  </div>
+                                  {tab === 'PI' && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                                      <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>DD</span>
+                                      <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{ddVal}</span>
+                                    </div>
+                                  )}
 
                                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
                                     <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>🌡️ Temp</span>
@@ -1977,22 +2139,6 @@ export default function ReportScreen({ record, onChange }) {
                                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
                                     <span style={{ fontSize: 8, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Corrected R40</span>
                                     <span style={{ fontSize: 11, fontWeight: 800, color: '#1e3a8a', marginTop: 2, textAlign: 'center' }}>{corrR40Str}</span>
-                                  </div>
-
-                                  <div style={{
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    padding: '6px 8px',
-                                    background: passRating.bg,
-                                    borderRadius: 6,
-                                    border: `1px solid ${passRating.color}22`
-                                  }}>
-                                    <span style={{ fontSize: 8, color: passRating.color, fontWeight: 800, textTransform: 'uppercase' }}>Rating</span>
-                                    <span style={{ fontSize: 10, fontWeight: 800, color: passRating.color, marginTop: 2, textAlign: 'center' }}>
-                                      {passRating.text}
-                                    </span>
                                   </div>
                                 </div>
                               );
@@ -2022,14 +2168,15 @@ export default function ReportScreen({ record, onChange }) {
                                   </thead>
                                   <tbody>
                                     {(() => {
-                                      let previewRows = rows;
+                                      const cleanRows = (tab === 'PI' || tab === 'DAR' || tab === 'RAMP') ? stripTrailingSummary(rows) : rows;
+                                      let previewRows = cleanRows;
                                       if (tab === 'PI') {
-                                        previewRows = rows.filter(r => {
+                                        previewRows = cleanRows.filter(r => {
                                           const t = Math.round(r.time);
                                           return t !== 0 && (t === 1 || t % 15 === 0);
                                         });
                                       } else if (tab === 'DAR') {
-                                        previewRows = rows.filter(r => {
+                                        previewRows = cleanRows.filter(r => {
                                           const t = Math.round(r.time);
                                           return t !== 0 && (t === 1 || t % 5 === 0);
                                         });
@@ -2083,7 +2230,7 @@ export default function ReportScreen({ record, onChange }) {
                                                   <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </YAxis>
                                                 <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
-                                                <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                                <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={{ r: 4 }} />
                                               </LineChart>
                                             </ResponsiveContainer>
                                           </div>
@@ -2131,7 +2278,7 @@ export default function ReportScreen({ record, onChange }) {
                                                   <Label value="Resistance (MΩ)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </YAxis>
                                                 <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
-                                                <Line type="monotone" dataKey="resistance" name="R (MΩ)" stroke="#10b981" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                                <Line type="linear" dataKey="resistance" name="R (MΩ)" stroke="#10b981" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
                                               </LineChart>
                                             </ResponsiveContainer>
                                           </div>
@@ -2154,7 +2301,7 @@ export default function ReportScreen({ record, onChange }) {
                                                 <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                               </YAxis>
                                               <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
-                                              <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                              <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={{ r: 4 }} />
                                             </LineChart>
                                           </ResponsiveContainer>
                                         </div>
@@ -2173,7 +2320,9 @@ export default function ReportScreen({ record, onChange }) {
                                   <div id={`chart-insulation-${tab}-${tableId}`} style={{ flex: 1.0, height: 180, minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 12px 8px 8px' }}>
                                     <ResponsiveContainer width="100%" height="100%">
                                       <LineChart data={(() => {
-                                        let chartRows = rows.filter(r => r.time !== 0);
+                                        // stripEarlyTransients drops the 2 TΩ stabilization spike so the Y-axis
+                                        // auto-scales to the real signal (matches InsulationTab behavior).
+                                        let chartRows = stripEarlyTransients(stripTrailingSummary(rows).filter(r => r.time !== 0));
                                         if (tab === 'DAR') {
                                           const resistances = chartRows
                                             .map(r => r.resistance)
@@ -2213,7 +2362,7 @@ export default function ReportScreen({ record, onChange }) {
                                           <Label value={yAxisLabel} angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                         </YAxis>
                                         <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
-                                        <Line type="monotone" dataKey={yAxisKey} name={lineName} stroke={strokeColor} strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                                        <Line type="monotone" dataKey={yAxisKey} name={lineName} stroke={strokeColor} strokeWidth={1.5} dot={tab === 'PI' ? false : { r: 2 }} activeDot={{ r: 4 }} />
                                       </LineChart>
                                     </ResponsiveContainer>
                                   </div>

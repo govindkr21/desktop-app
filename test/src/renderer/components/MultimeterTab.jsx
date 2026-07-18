@@ -1086,7 +1086,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
     if (record) {
       await api.saveMultimeterField(record.id, fieldKey, {
-        value: finalVal,
+        value: finalVal === undefined ? null : finalVal,
         temperature: parseFloat(temperature) || 0
       });
     }
@@ -1719,7 +1719,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         </div>
 
         {/* Temperature */}
-        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6, flex: '0 0 auto', minWidth: 160 }}>
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6, flex: '0 0 auto', minWidth: 200 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <span style={{ fontSize: 14 }}>🌡️</span>
             <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: 0.6, textTransform: 'uppercase' }}>Temperature</span>
@@ -1728,6 +1728,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
             <input
               type="number"
+              step="0.1"
               value={temperature}
               onChange={e => {
                 const v = e.target.value;
@@ -1740,7 +1741,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
                 }
               }}
               style={{
-                width: 64, border: 'none', outline: 'none',
+                width: 112, border: 'none', outline: 'none',
                 fontSize: 28, fontWeight: 800, color: `hsl(${120 - tempNum * 1.2}, 70%, 40%)`,
                 fontFamily: 'monospace', background: 'transparent', padding: 0,
               }}
