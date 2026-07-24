@@ -293,12 +293,39 @@ function splitSVData(rows) {
   return { transientRows, summaryRows };
 }
 
-// Helper to check pass/fail status
+// Helper to check pass/fail status (IEEE 43 corrected-R40 thresholds)
 function getPassStatus(Rc40) {
   if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b' };
-  if (Rc40 >= 100) return { text: 'Pass (Good)', color: '#16a34a' };
+  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a' };
   if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb' };
   return { text: 'Fail (Low Insulation)', color: '#dc2626' };
+}
+
+// SV rating based on Step Resistance chart linearity — measures mean absolute
+// % deviation of intermediate points from the straight line drawn between the
+// first and last step-resistance points. Larger deviation = worse rating.
+function getSVRating(summaryRows) {
+  if (!summaryRows || summaryRows.length < 3) return { text: '—', color: '#64748b', deviation: null };
+  const pts = summaryRows
+    .map(r => ({ t: Number(r.time), y: Number(r.resistance) }))
+    .filter(p => !isNaN(p.t) && !isNaN(p.y) && p.y > 0);
+  if (pts.length < 3) return { text: '—', color: '#64748b', deviation: null };
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const slope = (last.y - first.y) / (last.t - first.t);
+  let sum = 0, n = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const expected = first.y + slope * (pts[i].t - first.t);
+    if (expected <= 0) continue;
+    sum += Math.abs(pts[i].y - expected) / Math.abs(expected) * 100;
+    n++;
+  }
+  if (n === 0) return { text: '—', color: '#64748b', deviation: null };
+  const meanDev = sum / n;
+  if (meanDev < 10) return { text: 'Pass (Excellent)', color: '#16a34a', deviation: meanDev };
+  if (meanDev < 25) return { text: 'Pass (Standard)', color: '#2563eb', deviation: meanDev };
+  if (meanDev < 50) return { text: 'Concern (Non-linear)', color: '#d97706', deviation: meanDev };
+  return { text: 'Fail (Non-linear)', color: '#dc2626', deviation: meanDev };
 }
 
 // Helper to get nominal voltage from insulation test data
@@ -541,43 +568,107 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
 }
 
 function drawPDFPolarGraph(doc, title, startX, startY, size, impData) {
-  const centerX = startX + size / 2;
-  const centerY = startY + size / 2 + 10;
-  const maxR = size / 2 - 20;
+  const validPoints = impData.filter(d => d.z !== null && d.z !== undefined && !isNaN(d.z));
+
+  // Auto-zoom: if every vector's angle sits inside a single quadrant (2° slack at
+  // the boundaries), pivot the plot into that quadrant so intra-quadrant differences
+  // become visible. Otherwise render the full 360° view.
+  const TOL = 2;
+  const norm = (deg) => ((deg % 360) + 360) % 360;
+  const zoomQuadrant = (() => {
+    if (validPoints.length === 0) return null;
+    const fits = (q, d) => {
+      const bounds = { 1: [0, 90], 2: [90, 180], 3: [180, 270], 4: [270, 360] }[q];
+      let dd = d;
+      if (q === 4 && dd < 90 - TOL) dd += 360;
+      return dd >= bounds[0] - TOL && dd <= bounds[1] + TOL;
+    };
+    for (const q of [1, 2, 3, 4]) {
+      if (validPoints.every(pt => fits(q, norm(pt.deg)))) return q;
+    }
+    return null;
+  })();
+
+  const centered = zoomQuadrant === null;
+  // In zoom mode the origin moves to a corner, so we can use nearly the full
+  // width/height as the radius — roughly 2× the centered radius.
+  const maxR = centered ? size / 2 - 20 : size - 30;
+
+  const padTop = 15, padSide = 12, padBot = 8;
+  const plotLeft = startX + padSide;
+  const plotRight = startX + size - padSide;
+  const plotTop = startY + padTop;
+  const plotBot = startY + size - padBot;
+
+  let originX, originY;
+  if (centered) {
+    originX = startX + size / 2;
+    originY = startY + size / 2 + 10;
+  } else if (zoomQuadrant === 1) { originX = plotLeft;  originY = plotBot; }
+    else if (zoomQuadrant === 2) { originX = plotRight; originY = plotBot; }
+    else if (zoomQuadrant === 3) { originX = plotRight; originY = plotTop; }
+    else                          { originX = plotLeft;  originY = plotTop; }
 
   // Title
   doc.fillColor('#1E3A8A').fontSize(8.5).font('Helvetica-Bold')
-    .text(title, startX, startY + 2, { width: size, align: 'center' });
+    .text(centered ? title : `${title} — Q${zoomQuadrant}`, startX, startY + 2, { width: size, align: 'center' });
 
-  // Grid circles
-  doc.strokeColor('#E2E8F0').lineWidth(0.5);
-  doc.circle(centerX, centerY, maxR * 0.33).stroke();
-  doc.circle(centerX, centerY, maxR * 0.66).stroke();
-  doc.circle(centerX, centerY, maxR).stroke();
+  // Grid — full circles when centered, quarter-arcs when zoomed. PDFKit's path()
+  // accepts SVG path data, so we build an "M …  A …" arc string.
+  doc.strokeColor('#E2E8F0').lineWidth(0.5).undash();
+  const arcBounds = centered ? null
+    : ({ 1: [0, 90], 2: [90, 180], 3: [180, 270], 4: [270, 360] }[zoomQuadrant]);
+  const arcPath = (r, aDeg, bDeg) => {
+    const a = (aDeg * Math.PI) / 180, b = (bDeg * Math.PI) / 180;
+    const ax = originX + r * Math.cos(a), ay = originY - r * Math.sin(a);
+    const bx = originX + r * Math.cos(b), by = originY - r * Math.sin(b);
+    return `M ${ax} ${ay} A ${r} ${r} 0 0 0 ${bx} ${by}`;
+  };
+  if (centered) {
+    doc.circle(originX, originY, maxR * 0.33).stroke();
+    doc.circle(originX, originY, maxR * 0.66).stroke();
+    doc.circle(originX, originY, maxR).stroke();
+  } else {
+    doc.path(arcPath(maxR * 0.33, arcBounds[0], arcBounds[1])).stroke();
+    doc.path(arcPath(maxR * 0.66, arcBounds[0], arcBounds[1])).stroke();
+    doc.strokeColor('#94A3B8');
+    doc.path(arcPath(maxR,        arcBounds[0], arcBounds[1])).stroke();
+  }
 
-  // Draw axis lines (0, 45, 90, 135 degrees)
-  const angles = [0, 45, 90, 135, 180, 225, 270, 315];
-  angles.forEach(angle => {
+  // Axis guide lines — 8 spokes when centered, only 3 (bounds + midline) when zoomed
+  const guideAngles = centered
+    ? [0, 45, 90, 135, 180, 225, 270, 315]
+    : ({ 1: [0, 45, 90], 2: [90, 135, 180], 3: [180, 225, 270], 4: [270, 315, 360] }[zoomQuadrant]);
+  const labelAngles = centered ? [0, 90, 180, 270] : guideAngles;
+
+  doc.strokeColor('#94A3B8').lineWidth(0.5);
+  guideAngles.forEach(angle => {
     const rad = (angle * Math.PI) / 180;
-    const endX = centerX + maxR * Math.cos(rad);
-    const endY = centerY - maxR * Math.sin(rad);
-    doc.moveTo(centerX, centerY).lineTo(endX, endY).dash(2, { space: 2 }).stroke();
+    const endX = originX + maxR * Math.cos(rad);
+    const endY = originY - maxR * Math.sin(rad);
+    doc.moveTo(originX, originY).lineTo(endX, endY).dash(2, { space: 2 }).stroke();
+  });
+  doc.undash();
 
-    // Labels for 0, 90, 180, 270
-    if (angle % 90 === 0) {
-      doc.fillColor('#64748B').fontSize(5.5).font('Helvetica');
-      let lx = endX;
-      let ly = endY;
-      if (angle === 0) { lx += 2; ly -= 2.5; }
-      else if (angle === 90) { lx -= 10; ly -= 7; }
-      else if (angle === 180) { lx -= 15; ly -= 2.5; }
-      else if (angle === 270) { lx -= 10; ly += 2; }
-      doc.text(`${angle}°`, lx, ly);
-    }
+  labelAngles.forEach(angle => {
+    const rad = (angle * Math.PI) / 180;
+    const endX = originX + (maxR + 4) * Math.cos(rad);
+    const endY = originY - (maxR + 4) * Math.sin(rad);
+    doc.fillColor('#64748B').fontSize(5.5).font('Helvetica');
+    let lx = endX, ly = endY;
+    const a = ((angle % 360) + 360) % 360;
+    if (a === 0)   { lx += 2;  ly -= 2.5; }
+    else if (a === 90)  { lx -= 5;  ly -= 7;   }
+    else if (a === 180) { lx -= 10; ly -= 2.5; }
+    else if (a === 270) { lx -= 5;  ly += 2;   }
+    else if (a === 360) { lx += 2;  ly -= 2.5; }
+    else if (a === 45)  { lx += 1;  ly -= 6;   }
+    else if (a === 135) { lx -= 12; ly -= 6;   }
+    else if (a === 225) { lx -= 12; ly += 1;   }
+    else if (a === 315) { lx += 1;  ly += 1;   }
+    doc.text(`${a === 360 ? 0 : a}°`, lx, ly);
   });
 
-  // Find max Z to scale radius
-  const validPoints = impData.filter(d => d.z !== null && d.z !== undefined && !isNaN(d.z));
   if (validPoints.length === 0) return;
   const maxZ = Math.max(...validPoints.map(d => d.z)) * 1.1 || 10;
 
@@ -590,18 +681,29 @@ function drawPDFPolarGraph(doc, title, startX, startY, size, impData) {
     '3-N': '#EC4899',
   };
 
-  // Plot points
+  // Vector arrows — line from origin to (r, θ) with a triangular arrowhead at the tip
   validPoints.forEach(pt => {
     const r = (pt.z / maxZ) * maxR;
     const rad = (pt.deg * Math.PI) / 180;
-    const px = centerX + r * Math.cos(rad);
-    const py = centerY - r * Math.sin(rad);
+    const px = originX + r * Math.cos(rad);
+    const py = originY - r * Math.sin(rad);
     const color = phaseColors[pt.phase] || '#64748B';
 
-    doc.fillColor(color).circle(px, py, 2.5).fill();
-    // Tiny label near point
-    doc.fillColor(color).fontSize(5).font('Helvetica-Bold')
-      .text(`${pt.phase}`, px + 4, py - 2.5);
+    doc.strokeColor(color).lineWidth(1.4).lineCap('round');
+    doc.moveTo(originX, originY).lineTo(px, py).stroke();
+
+    // Arrowhead: small filled triangle at (px, py) rotated to match the vector direction
+    const headLen = 5, headHalf = 2.2;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    // Base of the triangle sits headLen behind the tip along the vector.
+    const bx = px - headLen * cos;
+    const by = py + headLen * sin;
+    // Perpendicular unit (in screen space): (-sin, -cos) rotated appropriately.
+    const perpX = -sin, perpY = -cos;
+    const p1x = bx + headHalf * perpX, p1y = by + headHalf * perpY;
+    const p2x = bx - headHalf * perpX, p2y = by - headHalf * perpY;
+    doc.fillColor(color);
+    doc.moveTo(px, py).lineTo(p1x, p1y).lineTo(p2x, p2y).closePath().fill();
   });
 }
 
@@ -1332,13 +1434,8 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     windingSheet.mergeCells(`A${t1Title.number}:G${t1Title.number}`);
     t1Title.getCell(1).font = boldFont;
 
-    // Group header row: Phase Line | DCR | ACR (spans 5 freq columns)
-    const t1GroupHeader = windingSheet.addRow(['Phase Line', 'DCR', 'ACR', '', '', '', '']);
-    windingSheet.mergeCells(`C${t1GroupHeader.number}:G${t1GroupHeader.number}`);
-    styleHeaderRow(t1GroupHeader, 7);
-
-    // Frequency sub-header row — same blue as the rest of the header
-    const t1FreqHeader = windingSheet.addRow(['', '0Hz', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
+    // Single header row — DCR column labelled "DC", ACR columns by frequency
+    const t1FreqHeader = windingSheet.addRow(['Phase Line', 'DC', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz']);
     styleHeaderRow(t1FreqHeader, 7);
 
     ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].forEach((phase, pIdx) => {
@@ -1389,6 +1486,50 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       row.getCell(2).font = { name: 'Arial', bold: true, size: 10 };
     });
 
+    // % Imbalance row across DC + ACR frequency columns
+    {
+      const tempCorrect = (val, temp) => {
+        if (val === undefined || val === null || val === '') return null;
+        const v = parseFloat(val);
+        if (isNaN(v)) return null;
+        if (!record.correctWindingTo20) return v;
+        const tempNum = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
+        return v * (254.5 / (234.5 + tempNum));
+      };
+      const dcVals = ['1-2', '1-3', '2-3'].map(p => {
+        const k = `${group}_res_${p}`;
+        return tempCorrect(mulData[k]?.value, mulData[k]?.temperature);
+      });
+      const dcImb = calculateImbalance(dcVals[0], dcVals[1], dcVals[2]);
+      const freqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+        const vals = ['1-2', '1-3', '2-3'].map(p => {
+          const k = `${group}_res_${p}_${f}`;
+          let v = mulData[k]?.value;
+          if (v === undefined || v === null || v === '') {
+            const spot = mulData[`${group}_res_${p}`];
+            if (spot?.frequency === f) v = spot?.value;
+          }
+          return tempCorrect(v, mulData[k]?.temperature);
+        });
+        return calculateImbalance(vals[0], vals[1], vals[2]);
+      });
+      const allImbs = [dcImb, ...freqImbs];
+      const fmt = (imb) => (imb === null || imb === undefined) ? '—' : `${imb.toFixed(2)}%`;
+      const imbRow = windingSheet.addRow(['% Imbalance', ...allImbs.map(fmt)]);
+      imbRow.eachCell((cell, colNum) => {
+        cell.border = borders;
+        cell.alignment = { horizontal: colNum === 1 ? 'left' : 'center' };
+        if (colNum === 1) {
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF1E3A8A' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+        } else {
+          const currentImb = allImbs[colNum - 2];
+          cell.fill = getImbalanceFillExcel(currentImb);
+          cell.font = getImbalanceFontExcel(currentImb);
+        }
+      });
+    }
+
     // ─────────────────────────────────────────────
     // Table 3: Winding Inductance Measurements
     // ─────────────────────────────────────────────
@@ -1405,7 +1546,7 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].forEach(f => {
         const key = `${group}_ind_${phase}_${f}`;
         let val = mulData[key]?.value;
-        
+
         // Fallback to spot Inductance if sweep is empty
         if (val === undefined || val === null || val === '') {
           const spotKey = `${group}_ind_${phase}`;
@@ -1423,6 +1564,35 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       const row = windingSheet.addRow(rowVals);
       styleBodyRow(row, 6, pIdx % 2 === 1);
     });
+
+    // % Imbalance row for Inductance across the 5 frequency columns
+    {
+      const indFreqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+        const vals = ['1-2', '1-3', '2-3'].map(p => {
+          let v = mulData[`${group}_ind_${p}_${f}`]?.value;
+          if (v === undefined || v === null || v === '') {
+            const spot = mulData[`${group}_ind_${p}`];
+            if (spot?.frequency === f) v = spot?.value;
+          }
+          return v;
+        });
+        return calculateImbalance(vals[0], vals[1], vals[2]);
+      });
+      const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
+      const indImbRow = windingSheet.addRow(['% Imbalance', ...indFreqImbs.map(fmt)]);
+      indImbRow.eachCell((cell, colNum) => {
+        cell.border = borders;
+        cell.alignment = { horizontal: 'center' };
+        if (colNum === 1) {
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF1E3A8A' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+        } else if (colNum <= 6) {
+          const currentImb = indFreqImbs[colNum - 2];
+          cell.fill = getImbalanceFillExcel(currentImb);
+          cell.font = getImbalanceFontExcel(currentImb);
+        }
+      });
+    }
 
     // ─────────────────────────────────────────────
     // Table 4: Winding Capacitance Measurements
@@ -1456,6 +1626,29 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       const row = windingSheet.addRow([`Phase ${phase}`, cDisplay, cFreq]);
       styleBodyRow(row, 3, pIdx % 2 === 1);
     });
+
+    // % Imbalance row for Capacitance (line-line, fallback to line-GND)
+    {
+      const lineVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_cap_${p}`]?.value);
+      let capImb = calculateImbalance(lineVals[0], lineVals[1], lineVals[2]);
+      if (capImb === null || capImb === undefined) {
+        const gndVals = ['1-GND', '2-GND', '3-GND'].map(p => mulData[`${group}_cap_${p}`]?.value);
+        capImb = calculateImbalance(gndVals[0], gndVals[1], gndVals[2]);
+      }
+      const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
+      const capImbRow = windingSheet.addRow(['% Imbalance', fmt(capImb), '']);
+      capImbRow.eachCell((cell, colNum) => {
+        cell.border = borders;
+        cell.alignment = { horizontal: 'center' };
+        if (colNum === 1) {
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF1E3A8A' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+        } else if (colNum === 2) {
+          cell.fill = getImbalanceFillExcel(capImb);
+          cell.font = getImbalanceFontExcel(capImb);
+        }
+      });
+    }
 
     // ─────────────────────────────────────────────
     // Table 5: Impedance Z & Phase Angle Measurements
@@ -1502,6 +1695,30 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
         const row = windingSheet.addRow([`Phase ${phase}`, zDisplay, degDisplay, zFreq]);
         styleBodyRow(row, 4, pIdx % 2 === 1);
       });
+
+      // % Imbalance row for Impedance (Z and Phase Angle)
+      {
+        const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
+        const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_deg`]?.value);
+        const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+        const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
+        const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
+        const impImbRow = windingSheet.addRow(['% Imbalance', fmt(zImbVal), fmt(degImbVal), '']);
+        impImbRow.eachCell((cell, colNum) => {
+          cell.border = borders;
+          cell.alignment = { horizontal: 'center' };
+          if (colNum === 1) {
+            cell.font = { name: 'Arial', bold: true, color: { argb: 'FF1E3A8A' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+          } else if (colNum === 2) {
+            cell.fill = getImbalanceFillExcel(zImbVal);
+            cell.font = getImbalanceFontExcel(zImbVal);
+          } else if (colNum === 3) {
+            cell.fill = getImbalanceFillExcel(degImbVal);
+            cell.font = getImbalanceFontExcel(degImbVal);
+          }
+        });
+      }
 
       // Embed polar plot in Excel
       if (chartImages && chartImages.polar && chartImages.polar[group]) {
@@ -1599,129 +1816,30 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
 
   if (hasStatorIndSweep || hasStatorResSweep || hasRotorIndSweep || hasRotorResSweep) {
     const sweepSheet = workbook.addWorksheet('Winding Frequency Sweep');
-    sweepSheet.columns = [
-      { key: 'phase', width: 22 },
-      { key: 'f100', width: 14 },
-      { key: 'f120', width: 14 },
-      { key: 'f1k', width: 14 },
-      { key: 'f10k', width: 14 },
-      { key: 'f100k', width: 14 }
-    ];
+    // 12 columns so the two charts sit side-by-side (chart A: cols 1-6, chart B: cols 7-12)
+    sweepSheet.columns = Array.from({ length: 12 }, () => ({ width: 14 }));
 
     embedLogoAndDate(sweepSheet, 12, 0);
 
-    const addSweepSection = (title, group, type, unit) => {
-      const groupData = [];
-      tablePhases.forEach(phase => {
-        const rowData = { phase: `${group.charAt(0).toUpperCase() + group.slice(1)} Phase ${phase}` };
-        let rowHasData = false;
-        tableFreqs.forEach((f) => {
-          const cellData = mulData[`${group}_${type}_${phase}_${f}`];
-          if (cellData && cellData.value !== undefined) {
-            rowHasData = true;
-            let val = cellData.value;
-            if (type === 'res' && record.correctWindingTo20) {
-              const tempNum = isNaN(parseFloat(cellData.temperature)) ? 25 : parseFloat(cellData.temperature);
-              val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
-            }
-            const key = `f${f.replace('Hz', '').replace('kHz', 'k')}`;
-            rowData[key] = val;
-          }
-        });
-        if (rowHasData) {
-          groupData.push(rowData);
-        }
-      });
+    // Chart-only layout: place each chart at a fixed slot. No tables.
+    // Two charts per visual row; each chart occupies 6 columns × ~18 sheet rows.
+    const CHART_WIDTH = 460;
+    const CHART_HEIGHT = 260;
+    const ROWS_PER_CHART_BLOCK = 18;
+    const TITLE_ROW_HEIGHT = 20;
 
-      if (groupData.length === 0) return;
+    const addChartCell = (title, group, type, slotRow, slotCol) => {
+      // Title row above the chart image
+      const titleRow = sweepSheet.getRow(slotRow);
+      const titleCell = titleRow.getCell(slotCol + 1);
+      titleCell.value = title;
+      sweepSheet.mergeCells(slotRow, slotCol + 1, slotRow, slotCol + 6);
+      titleCell.font = { name: 'Arial', bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+      titleCell.fill = headerFill;
+      titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      titleRow.height = TITLE_ROW_HEIGHT;
+      titleRow.commit && titleRow.commit();
 
-      const headerRow = sweepSheet.addRow([title]);
-      sweepSheet.mergeCells(`A${headerRow.number}:F${headerRow.number}`);
-      headerRow.getCell(1).font = { name: 'Arial', bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
-      headerRow.getCell(1).fill = headerFill;
-      headerRow.height = 20;
-
-      const subHeaderRow = sweepSheet.addRow(['Phase Line', '100 Hz', '120 Hz', '1 kHz', '10 kHz', '100 kHz']);
-      subHeaderRow.eachCell(cell => {
-        cell.font = boldFont;
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
-        cell.border = borders;
-        cell.alignment = { horizontal: 'center' };
-      });
-      subHeaderRow.height = 18;
-
-      let grpRowIdx = 0;
-      groupData.forEach(rowData => {
-        const row = sweepSheet.addRow([
-          rowData.phase,
-          rowData.f100 !== undefined ? (isOverload(rowData.f100, type === 'ind' ? 'L' : 'res') ? 'O.L' : rowData.f100) : '—',
-          rowData.f120 !== undefined ? (isOverload(rowData.f120, type === 'ind' ? 'L' : 'res') ? 'O.L' : rowData.f120) : '—',
-          rowData.f1k !== undefined ? (isOverload(rowData.f1k, type === 'ind' ? 'L' : 'res') ? 'O.L' : rowData.f1k) : '—',
-          rowData.f10k !== undefined ? (isOverload(rowData.f10k, type === 'ind' ? 'L' : 'res') ? 'O.L' : rowData.f10k) : '—',
-          rowData.f100k !== undefined ? (isOverload(rowData.f100k, type === 'ind' ? 'L' : 'res') ? 'O.L' : rowData.f100k) : '—'
-        ]);
-        row.eachCell(cell => {
-          cell.font = bodyFont;
-          cell.border = borders;
-          cell.alignment = { horizontal: 'center' };
-          if (grpRowIdx % 2 === 1) cell.fill = altFill;
-        });
-        row.height = 18;
-        grpRowIdx++;
-      });
-
-      // Calculate column imbalances if phases 1-2, 1-3, and 2-3 are present
-      const colImbalances = {};
-      let maxImbalance = 0;
-      tableFreqs.forEach(f => {
-        const v12 = mulData[`${group}_${type}_1-2_${f}`]?.value;
-        const v13 = mulData[`${group}_${type}_1-3_${f}`]?.value;
-        const v23 = mulData[`${group}_${type}_2-3_${f}`]?.value;
-        const imb = calculateImbalance(v12, v13, v23);
-        if (imb !== null) {
-          colImbalances[f] = imb;
-          if (imb > maxImbalance) {
-            maxImbalance = imb;
-          }
-        }
-      });
-
-      // Add Imbalance row if we have calculated imbalances
-      if (Object.keys(colImbalances).length > 0) {
-        const imbRow = sweepSheet.addRow([
-          'Imbalance (%)',
-          colImbalances['100Hz'] !== undefined ? `${colImbalances['100Hz'].toFixed(2)}%` : '—',
-          colImbalances['120Hz'] !== undefined ? `${colImbalances['120Hz'].toFixed(2)}%` : '—',
-          colImbalances['1kHz'] !== undefined ? `${colImbalances['1kHz'].toFixed(2)}%` : '—',
-          colImbalances['10kHz'] !== undefined ? `${colImbalances['10kHz'].toFixed(2)}%` : '—',
-          colImbalances['100kHz'] !== undefined ? `${colImbalances['100kHz'].toFixed(2)}%` : '—'
-        ]);
-        imbRow.eachCell(cell => {
-          cell.font = boldFont;
-          cell.border = borders;
-          cell.alignment = { horizontal: 'center' };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF2E9' } };
-        });
-        imbRow.height = 18;
-      }
-
-      // Add Condition Status card
-      if (Object.keys(colImbalances).length > 0) {
-        const statusStr = maxImbalance < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
-        const statusText = `Max Imbalance: ${maxImbalance.toFixed(2)}%   |   Condition Status: ${statusStr}`;
-        const statusRow = sweepSheet.addRow([statusText]);
-        sweepSheet.mergeCells(`A${statusRow.number}:F${statusRow.number}`);
-        const sCell = statusRow.getCell(1);
-        sCell.font = boldFont;
-        sCell.border = borders;
-        sCell.alignment = { horizontal: 'left', vertical: 'middle' };
-        sCell.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: maxImbalance < 5.0 ? 'FFD4EDDA' : 'FFFFD7DA' }
-        };
-        statusRow.height = 20;
-      }
       if (chartImages && chartImages.sweep && chartImages.sweep[`${group}_${type}`]) {
         try {
           const rawBase64 = chartImages.sweep[`${group}_${type}`];
@@ -1731,21 +1849,36 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
             extension: 'png',
           });
           sweepSheet.addImage(imageId, {
-            tl: { col: 7, row: headerRow.number - 1 },
-            ext: { width: 350, height: 180 }
+            tl: { col: slotCol, row: slotRow },  // 0-indexed for images
+            ext: { width: CHART_WIDTH, height: CHART_HEIGHT }
           });
         } catch (err) {
           console.error(`Failed to embed sweep chart for ${group} ${type}:`, err);
         }
       }
-
-      sweepSheet.addRow([]); // Blank spacer
     };
 
-    addSweepSection('Stator Inductance Sweep (mH)', 'stator', 'ind', 'mH');
-    addSweepSection('Stator AC Resistance Sweep (Ω)', 'stator', 'res', 'Ω');
-    if (includeRotor) addSweepSection('Rotor Inductance Sweep (mH)', 'rotor', 'ind', 'mH');
-    if (includeRotor) addSweepSection('Rotor AC Resistance Sweep (Ω)', 'rotor', 'res', 'Ω');
+    // Row cursor starts after the logo/date row (row 2 is 1-indexed just past embedLogoAndDate).
+    let cursorRow = 3;
+    const placeRow = (leftTitle, leftGroup, leftType, rightTitle, rightGroup, rightType) => {
+      const leftHas = hasSweepDataForGroup(mulData, leftGroup, leftType);
+      const rightHas = hasSweepDataForGroup(mulData, rightGroup, rightType);
+      if (!leftHas && !rightHas) return;
+      if (leftHas) addChartCell(leftTitle, leftGroup, leftType, cursorRow, 0);   // cols 1-6
+      if (rightHas) addChartCell(rightTitle, rightGroup, rightType, cursorRow, 6); // cols 7-12
+      cursorRow += ROWS_PER_CHART_BLOCK;
+    };
+
+    placeRow(
+      'Stator Inductance Sweep (mH)', 'stator', 'ind',
+      'Stator AC Resistance Sweep (Ω)', 'stator', 'res'
+    );
+    if (includeRotor) {
+      placeRow(
+        'Rotor Inductance Sweep (mH)', 'rotor', 'ind',
+        'Rotor AC Resistance Sweep (Ω)', 'rotor', 'res'
+      );
+    }
   }
 
   // ── Sheets 3-6: Insulation Tests (Megger) ──
@@ -1849,7 +1982,8 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
 
       const calcValues = [];
       if (r60 && r30) calcValues.push(`DAR: ${(r60 / r30).toFixed(2)}`);
-      if (r600 && r60) calcValues.push(`PI: ${(r600 / r60).toFixed(2)}`);
+      // PI hidden on DAR mode (needs 10 min of data).
+      if (tab !== 'DAR' && r600 && r60) calcValues.push(`PI: ${(r600 / r60).toFixed(2)}`);
       // DD is only meaningful for PI Test — hide it in DAR/SV/RAMP.
       const ddVal = rows.length > 2 ? '1.38' : '—';
       if (tab === 'PI') calcValues.push(`DD: ${ddVal}`);
@@ -2535,9 +2669,9 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     const DCR_TINT = '#EFF6FF';   // very light blue for the DCR body cell
     doc.fontSize(8.5).font('Helvetica-Bold').fillColor(BLUE).text(`DCR & ACR Winding Resistance (Ohms)${record.correctWindingTo20 ? ' @20°C' : ''}`, 40, y);
     y += 11;
-    // Columns: Phase Line | DCR (0Hz) | 100Hz | 120Hz | 1kHz | 10kHz | 100kHz
+    // Columns: Phase Line | DC | 100Hz | 120Hz | 1kHz | 10kHz | 100kHz
     const combCols = [W * 0.22, W * 0.13, W * 0.13, W * 0.13, W * 0.13, W * 0.13, W * 0.13];
-    const combHeaders = ['Phase Line', 'DCR\n(0Hz)', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const combHeaders = ['Phase Line', 'DC', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
 
     // Single blue header band spans all columns.
     doc.rect(40, y, W, 18).fill(BLUE);
@@ -2609,6 +2743,65 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       combAlt = !combAlt;
     });
 
+    // % Imbalance row across DC + ACR frequency columns
+    {
+      const tempCorrect = (val, temp) => {
+        if (val === undefined || val === null || val === '') return null;
+        const v = parseFloat(val);
+        if (isNaN(v)) return null;
+        if (!record.correctWindingTo20) return v;
+        const tempNum = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
+        return v * (254.5 / (234.5 + tempNum));
+      };
+      const dcVals = ['1-2', '1-3', '2-3'].map(p => {
+        const k = `${groupPrefix}_res_${p}`;
+        return tempCorrect(mulData[k]?.value, mulData[k]?.temperature);
+      });
+      const dcImb = calculateImbalance(dcVals[0], dcVals[1], dcVals[2]);
+      const freqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+        const vals = ['1-2', '1-3', '2-3'].map(p => {
+          const k = `${groupPrefix}_res_${p}_${f}`;
+          let v = mulData[k]?.value;
+          if (v === undefined || v === null || v === '') {
+            const spot = mulData[`${groupPrefix}_res_${p}`];
+            if (spot?.frequency === f) v = spot?.value;
+          }
+          return tempCorrect(v, mulData[k]?.temperature);
+        });
+        return calculateImbalance(vals[0], vals[1], vals[2]);
+      });
+      const allImbs = [dcImb, ...freqImbs];
+      const imbBg = (imb) => {
+        if (imb === null || imb === undefined) return '#FFFFFF';
+        if (imb >= 5) return '#FEE2E2';
+        if (imb >= 2) return '#FEF3C7';
+        return '#D1FAE5';
+      };
+      const imbFg = (imb) => {
+        if (imb === null || imb === undefined) return '#64748B';
+        if (imb >= 5) return '#991B1B';
+        if (imb >= 2) return '#92400E';
+        return '#065F46';
+      };
+      // Label cell background
+      doc.rect(40, y, combCols[0], 14).fill('#F1F5F9');
+      // Value cells with imbalance-tinted backgrounds
+      let ix = 40 + combCols[0];
+      allImbs.forEach((imb, i) => {
+        doc.rect(ix, y, combCols[i + 1], 14).fill(imbBg(imb));
+        ix += combCols[i + 1];
+      });
+      // Text
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(BLUE).text('% Imbalance', 40 + 6, y + 3, { width: combCols[0] - 12, align: 'left' });
+      ix = 40 + combCols[0];
+      allImbs.forEach((imb, i) => {
+        const disp = (imb === null || imb === undefined) ? '—' : `${imb.toFixed(2)}%`;
+        doc.fillColor(imbFg(imb)).font('Helvetica-Bold').fontSize(7.5).text(disp, ix, y + 3, { width: combCols[i + 1], align: 'center' });
+        ix += combCols[i + 1];
+      });
+      y += 14;
+    }
+
     y += 10;
 
     // ─────────────────────────────────────────────
@@ -2658,6 +2851,31 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       indAlternate = !indAlternate;
     });
 
+    // % Imbalance row for Inductance (5 frequency columns)
+    {
+      const indFreqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+        const vals = ['1-2', '1-3', '2-3'].map(p => {
+          let v = mulData[`${groupPrefix}_ind_${p}_${f}`]?.value;
+          if (v === undefined || v === null || v === '') {
+            const spot = mulData[`${groupPrefix}_ind_${p}`];
+            if (spot?.frequency === f) v = spot?.value;
+          }
+          return v;
+        });
+        return calculateImbalance(vals[0], vals[1], vals[2]);
+      });
+      doc.rect(40, y, W, 12).fill('#F1F5F9');
+      doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text('% Imbalance', 44, y + 2.5, { width: indCols[0] - 8, align: 'left' });
+      let curIx = 40 + indCols[0];
+      indFreqImbs.forEach((imb, idx) => {
+        const cell = getImbalanceCellData(imb);
+        doc.rect(curIx, y, indCols[idx + 1], 12).fill(cell.bg);
+        doc.fillColor(cell.text).fontSize(7).font('Helvetica-Bold').text(cell.display, curIx, y + 2.5, { width: indCols[idx + 1], align: 'center' });
+        curIx += indCols[idx + 1];
+      });
+      y += 12;
+    }
+
     y += 10;
 
     // ─────────────────────────────────────────────
@@ -2704,6 +2922,22 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       y += 12;
       capAlternate = !capAlternate;
     });
+
+    // % Imbalance row for Capacitance (line-line, fallback to line-GND)
+    {
+      const lineVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${groupPrefix}_cap_${p}`]?.value);
+      let capImbVal = calculateImbalance(lineVals[0], lineVals[1], lineVals[2]);
+      if (capImbVal === null || capImbVal === undefined) {
+        const gndVals = ['1-GND', '2-GND', '3-GND'].map(p => mulData[`${groupPrefix}_cap_${p}`]?.value);
+        capImbVal = calculateImbalance(gndVals[0], gndVals[1], gndVals[2]);
+      }
+      const cell = getImbalanceCellData(capImbVal);
+      doc.rect(40, y, W, 12).fill('#F1F5F9');
+      doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text('% Imbalance', 44, y + 2.5, { width: capCols[0] - 8, align: 'left' });
+      doc.rect(40 + capCols[0], y, capCols[1], 12).fill(cell.bg);
+      doc.fillColor(cell.text).fontSize(7).font('Helvetica-Bold').text(cell.display, 40 + capCols[0], y + 2.5, { width: capCols[1], align: 'center' });
+      y += 12;
+    }
 
     doc.y = y + 10;
 
@@ -2769,6 +3003,23 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
         impAlternate = !impAlternate;
       });
 
+      // % Imbalance row for Impedance (Z and Phase Angle)
+      {
+        const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${groupPrefix}_imp_${p}_z`]?.value);
+        const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${groupPrefix}_imp_${p}_deg`]?.value);
+        const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+        const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
+        const cz = getImbalanceCellData(zImbVal);
+        const cd = getImbalanceCellData(degImbVal);
+        doc.rect(40, iy, W, 12).fill('#F1F5F9');
+        doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text('% Imbalance', 44, iy + 2.5, { width: impCols[0] - 8, align: 'left' });
+        doc.rect(40 + impCols[0], iy, impCols[1], 12).fill(cz.bg);
+        doc.fillColor(cz.text).fontSize(7).font('Helvetica-Bold').text(cz.display, 40 + impCols[0], iy + 2.5, { width: impCols[1], align: 'center' });
+        doc.rect(40 + impCols[0] + impCols[1], iy, impCols[2], 12).fill(cd.bg);
+        doc.fillColor(cd.text).fontSize(7).font('Helvetica-Bold').text(cd.display, 40 + impCols[0] + impCols[1], iy + 2.5, { width: impCols[2], align: 'center' });
+        iy += 12;
+      }
+
       doc.y = iy + 10;
     }
 
@@ -2794,178 +3045,82 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     }
   }
 
-  // --- Winding Frequency Sweep Tables rendering in PDF ---
-  const drawSweepSectionWithChart = (titleText, groupPrefix, type, unit) => {
-    // Check if we need to add a page
-    if (doc.y + 160 > doc.page.height - 40) {
-      doc.addPage();
-      drawHeader('WINDING FREQUENCY RESPONSE');
-    }
+  // --- Winding Frequency Sweep rendering in PDF (charts only, two per row) ---
+  const FREQS_SWEEP = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
 
-    const startY = doc.y;
-    const chartPageIndex = doc.bufferedPageRange().start + doc.bufferedPageRange().count - 1;
-
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLUE).text(titleText, 40);
-    doc.moveDown(0.2);
-
-    const leftW = W * 0.48;
-    const rightW = W * 0.48;
-    const gap = W * 0.04;
-
-    // 1. Draw Table (Left)
-    const cols = [leftW * 0.25, leftW * 0.15, leftW * 0.15, leftW * 0.15, leftW * 0.15, leftW * 0.15];
-    const headers = ['Phase Line', '100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    let y = doc.y;
-    let x = 40;
-
-    doc.rect(40, y, leftW, 14).fill(BLUE);
-    headers.forEach((h, idx) => {
-      doc.fillColor('#FFFFFF').fontSize(6.5).font('Helvetica-Bold').text(h, x, y + 4, { width: cols[idx], align: 'center' });
-      x += cols[idx];
-    });
-    y += 14;
-
-    const phases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-    const FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    let alternate = false;
-
-    phases.forEach(phase => {
-      let hasData = false;
-      for (const f of FREQS) {
-        const sweepKey = `${groupPrefix}_${type}_${phase}_${f}`;
-        if (mulData[sweepKey]?.value !== undefined && mulData[sweepKey]?.value !== null) {
-          hasData = true;
-          break;
-        }
-      }
-      if (!hasData) return;
-
-      doc.rect(40, y, leftW, 11).fill(alternate ? LGRAY : '#FFFFFF');
-
-      x = 40;
-      doc.fillColor(DARK_GRAY).fontSize(6.5).font('Helvetica-Bold').text(`Phase ${phase}`, x + 4, y + 2.5, { width: cols[0] - 6, align: 'left' });
-      x += cols[0];
-
-      doc.font('Helvetica').fontSize(6.5);
-
-      FREQS.forEach((f, idx) => {
-        const sweepKey = `${groupPrefix}_${type}_${phase}_${f}`;
-        const dataPoint = mulData[sweepKey];
-        let val = dataPoint?.value;
-        const temp = dataPoint?.temperature;
-
-        if (type === 'res' && record.correctWindingTo20 && typeof val === 'number') {
-          const rTemp = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
-          val = parseFloat((val * (254.5 / (234.5 + rTemp))).toFixed(3));
-        }
-
-        const modeCode = type === 'ind' ? 'L' : 'R';
-        const valStr = isOverload(val, modeCode) ? 'O.L' : (val !== undefined && val !== null ? String(val) : '—');
-        doc.text(valStr, x, y + 2.5, { width: cols[idx + 1], align: 'center' });
-        x += cols[idx + 1];
-      });
-
-      y += 11;
-      alternate = !alternate;
-    });
-
-    // Calculate column imbalances if phases 1-2, 1-3, and 2-3 are present
-    const colImbalances = {};
-    let maxImbalance = 0;
-    
-    FREQS.forEach(f => {
-      const v12 = mulData[`${groupPrefix}_${type}_1-2_${f}`]?.value;
-      const v13 = mulData[`${groupPrefix}_${type}_1-3_${f}`]?.value;
-      const v23 = mulData[`${groupPrefix}_${type}_2-3_${f}`]?.value;
-      
-      const imb = calculateImbalance(v12, v13, v23);
-      if (imb !== null) {
-        colImbalances[f] = imb;
-        if (imb > maxImbalance) {
-          maxImbalance = imb;
-        }
-      }
-    });
-
-    // Add Imbalance row if we have calculated imbalances
-    if (Object.keys(colImbalances).length > 0) {
-      doc.rect(40, y, leftW, 11).fill('#FEF3C7'); // light amber background for imbalance row
-      x = 40;
-      doc.fillColor(DARK_GRAY).fontSize(6.5).font('Helvetica-Bold').text(`Imbalance (%)`, x + 4, y + 2.5, { width: cols[0] - 6, align: 'left' });
-      x += cols[0];
-      
-      FREQS.forEach((f, idx) => {
-        const val = colImbalances[f];
-        const valStr = val !== undefined ? `${val.toFixed(2)}%` : '—';
-        doc.fillColor(DARK_GRAY).fontSize(6.5).font('Helvetica-Bold').text(valStr, x, y + 2.5, { width: cols[idx + 1], align: 'center' });
-        x += cols[idx + 1];
-      });
-      y += 11;
-    }
-
-    const tableBottomY = y;
-
-    // Assess condition status and write it below table
-    let statusText = '';
-    if (Object.keys(colImbalances).length > 0) {
-      const statusStr = maxImbalance < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
-      statusText = `Max Imbalance: ${maxImbalance.toFixed(2)}%  |  Condition Status: ${statusStr}`;
-      
-      doc.fillColor(maxImbalance < 5.0 ? '#16A34A' : '#DC2626')
-         .fontSize(7).font('Helvetica-Bold')
-         .text(statusText, 40, tableBottomY + 4, { width: leftW });
-      y += 14;
-    }
-
-    // 2. Draw Chart (Right)
-    doc.switchToPage(chartPageIndex);
-
-    const chartX = 40 + leftW + gap;
-    const chartY = startY;
-    const chartW = rightW;
-    const chartH = 100;
+  const drawSweepChart = (titleText, groupPrefix, type, chartX, chartY, chartW, chartH) => {
+    // Title above the chart
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(BLUE)
+      .text(titleText, chartX, chartY, { width: chartW });
 
     drawPDFMultiLineChart(
       doc,
       `${type === 'ind' ? 'Inductance' : 'AC Resistance'} Sweep Curves`,
-      chartX, chartY, chartW, chartH,
-      mulData,
-      groupPrefix,
-      type,
-      'Frequency',
-      type === 'ind' ? 'Inductance (mH)' : 'Resistance (Ohms)',
+      chartX, chartY + 12, chartW, chartH,
+      mulData, groupPrefix, type,
+      'Frequency', type === 'ind' ? 'Inductance (mH)' : 'Resistance (Ohms)',
       record.correctWindingTo20
     );
 
-    // Move cursor past both
-    const lastPageIdx = doc.bufferedPageRange().start + doc.bufferedPageRange().count - 1;
-    doc.switchToPage(lastPageIdx);
-    doc.y = Math.max(y, chartY + chartH) + 15;
+    // Max Imbalance status line under the chart
+    let maxImb = 0;
+    let hasAny = false;
+    FREQS_SWEEP.forEach(f => {
+      const v12 = mulData[`${groupPrefix}_${type}_1-2_${f}`]?.value;
+      const v13 = mulData[`${groupPrefix}_${type}_1-3_${f}`]?.value;
+      const v23 = mulData[`${groupPrefix}_${type}_2-3_${f}`]?.value;
+      const imb = calculateImbalance(v12, v13, v23);
+      if (imb !== null) {
+        hasAny = true;
+        if (imb > maxImb) maxImb = imb;
+      }
+    });
+    if (hasAny) {
+      const statusStr = maxImb < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
+      doc.fillColor(maxImb < 5.0 ? '#16A34A' : '#DC2626').fontSize(7).font('Helvetica-Bold')
+        .text(`Max Imbalance: ${maxImb.toFixed(2)}%  |  Condition Status: ${statusStr}`,
+          chartX, chartY + 12 + chartH + 4, { width: chartW });
+    }
   };
 
-  const hasStatorSweep = hasSweepDataForGroup(mulData, 'stator', 'ind');
+  const drawSweepRow = (leftCfg, rightCfg) => {
+    const chartH = 150;
+    const blockH = 12 /*title*/ + chartH + 16 /*status + padding*/;
+
+    if (doc.y + blockH > doc.page.height - 40) {
+      doc.addPage();
+      drawHeader('WINDING FREQUENCY RESPONSE');
+    }
+
+    const gap = W * 0.03;
+    const half = (W - gap) / 2;
+    const y0 = doc.y;
+
+    if (leftCfg)  drawSweepChart(leftCfg.title,  leftCfg.group,  leftCfg.type,  40,             y0, half, chartH);
+    if (rightCfg) drawSweepChart(rightCfg.title, rightCfg.group, rightCfg.type, 40 + half + gap, y0, half, chartH);
+
+    doc.y = y0 + blockH + 6;
+  };
+
+  const hasStatorSweep    = hasSweepDataForGroup(mulData, 'stator', 'ind');
   const hasStatorResSweep = hasSweepDataForGroup(mulData, 'stator', 'res');
-  const hasRotorSweep = hasSweepDataForGroup(mulData, 'rotor', 'ind');
-  const hasRotorResSweep = hasSweepDataForGroup(mulData, 'rotor', 'res');
+  const hasRotorSweep     = hasSweepDataForGroup(mulData, 'rotor',  'ind');
+  const hasRotorResSweep  = hasSweepDataForGroup(mulData, 'rotor',  'res');
 
   if (hasStatorSweep || hasRotorSweep || hasStatorResSweep || hasRotorResSweep) {
     doc.addPage();
     drawHeader('WINDING FREQUENCY RESPONSE');
 
-    if (hasStatorSweep) {
-      drawSweepSectionWithChart('Stator Inductance Frequency Sweep (mH)', 'stator', 'ind', 'mH');
-    }
+    drawSweepRow(
+      hasStatorSweep    ? { title: 'Stator Inductance Sweep (mH)',            group: 'stator', type: 'ind' } : null,
+      hasStatorResSweep ? { title: 'Stator AC Winding Resistance Sweep (Ω)', group: 'stator', type: 'res' } : null
+    );
 
-    if (hasStatorResSweep) {
-      drawSweepSectionWithChart('Stator AC Winding Resistance Frequency Sweep (Ohms)', 'stator', 'res', 'Ohms');
-    }
-
-    if (includeRotor && hasRotorSweep) {
-      drawSweepSectionWithChart('Rotor Inductance Frequency Sweep (mH)', 'rotor', 'ind', 'mH');
-    }
-
-    if (includeRotor && hasRotorResSweep) {
-      drawSweepSectionWithChart('Rotor AC Winding Resistance Frequency Sweep (Ohms)', 'rotor', 'res', 'Ohms');
+    if (includeRotor && (hasRotorSweep || hasRotorResSweep)) {
+      drawSweepRow(
+        hasRotorSweep    ? { title: 'Rotor Inductance Sweep (mH)',            group: 'rotor', type: 'ind' } : null,
+        hasRotorResSweep ? { title: 'Rotor AC Winding Resistance Sweep (Ω)', group: 'rotor', type: 'res' } : null
+      );
     }
   }
 
@@ -3013,8 +3168,10 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       doc.rect(40, doc.y, W, cardH).stroke();
 
       const boxY = doc.y + 4;
-      // PI / DAR / DD — DD only rendered on PI Test tables.
-      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('PI', 48, boxY).fontSize(9).text(pi, 48, boxY + 7);
+      // PI hidden on DAR mode (needs 10 min); DD only rendered on PI Test tables.
+      if (tab !== 'DAR') {
+        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('PI', 48, boxY).fontSize(9).text(pi, 48, boxY + 7);
+      }
       doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DAR', 88, boxY).fontSize(9).text(dar, 88, boxY + 7);
       if (tab === 'PI') {
         doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DD', 128, boxY).fontSize(9).text(ddVal, 128, boxY + 7);
@@ -3026,6 +3183,21 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
 
       // Corrected R40
       doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('CORRECTED R40', 308, boxY).fontSize(9).text(corrR40Str, 308, boxY + 7);
+
+      // Rating pill — SV uses chart linearity; others use IEEE 43 Rc40 threshold.
+      const ratingBasis = record.correctInsulationTo40 ? Rc40 : Rt;
+      const ratingObj = tab === 'SV'
+        ? getSVRating(splitSVData(rows).summaryRows)
+        : getPassStatus(ratingBasis);
+      const pillX = 400;
+      const pillY = doc.y + 2;
+      const pillW = 130;
+      const pillH = 20;
+      doc.save();
+      doc.roundedRect(pillX, pillY, pillW, pillH, 4).fill(ratingObj.color);
+      doc.fillColor('#FFFFFF').fontSize(6).font('Helvetica-Bold').text('RATING', pillX, pillY + 3, { width: pillW, align: 'center' });
+      doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold').text(ratingObj.text, pillX, pillY + 10, { width: pillW, align: 'center' });
+      doc.restore();
 
       doc.y += cardH + 12;
 
@@ -3117,10 +3289,12 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       }
 
       doc.rect(40, y, leftW, 14).fill('#F1F5F9');
-      // DD only shown for PI Test — omitted in DAR/SV/RAMP coefficient line.
+      // PI hidden on DAR mode (needs 10 min); DD only shown for PI Test.
       const coeffText = tab === 'PI'
         ? `Coefficients:  PI = ${pi}   |   DAR = ${dar}   |   DD = ${ddVal}`
-        : `Coefficients:  PI = ${pi}   |   DAR = ${dar}`;
+        : (tab === 'DAR'
+            ? `Coefficients:  DAR = ${dar}`
+            : `Coefficients:  PI = ${pi}   |   DAR = ${dar}`);
       doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold')
         .text(coeffText, 46, y + 3.5, { width: leftW - 12 });
       y += 18;

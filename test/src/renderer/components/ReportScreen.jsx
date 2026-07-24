@@ -67,9 +67,6 @@ const splitSVData = (rows) => {
 };
 
 const PolarPlot = ({ data, size = 180 }) => {
-  const centerX = size / 2;
-  const centerY = size / 2 + 10;
-  const maxR = size / 2 - 25;
   const legendH = 32; // room below the plot for legend swatches
   const svgH = size + legendH;
 
@@ -83,6 +80,61 @@ const PolarPlot = ({ data, size = 180 }) => {
     '1-N': '#7C3AED',
     '2-N': '#06B6D4',
     '3-N': '#EC4899',
+  };
+
+  // Auto-zoom: if every vector's angle sits inside a single quadrant (with 2° slack at
+  // the boundaries so noise doesn't flip classification), pivot the plot into that
+  // quadrant so intra-quadrant differences become visible. Otherwise fall back to
+  // the full 360° view.
+  const TOL = 2;
+  const zoomQuadrant = (() => {
+    if (validPoints.length === 0) return null;
+    const norm = (deg) => ((deg % 360) + 360) % 360;
+    const fits = (q, d) => {
+      const bounds = { 1: [0, 90], 2: [90, 180], 3: [180, 270], 4: [270, 360] }[q];
+      let dd = d;
+      // Wrap tiny angles just under 360 into Q4's range so 358° ~ -2° counts as Q4.
+      if (q === 4 && dd < 90 - TOL) dd += 360;
+      return dd >= bounds[0] - TOL && dd <= bounds[1] + TOL;
+    };
+    for (const q of [1, 2, 3, 4]) {
+      if (validPoints.every(pt => fits(q, norm(pt.deg)))) return q;
+    }
+    return null;
+  })();
+
+  const centered = zoomQuadrant === null;
+  const centerX = size / 2;
+  const centerY = size / 2 + 10;
+  // In zoom mode we place the origin in a corner of the plot area, so we can use
+  // nearly the full width/height as the radius — roughly 2× the centered radius.
+  const maxR = centered ? size / 2 - 25 : size - 45;
+
+  const padTop = 25, padSide = 20, padBot = 15;
+  const plotLeft = padSide, plotRight = size - padSide;
+  const plotTop = padTop,  plotBot = size - padBot;
+  let originX, originY;
+  if (centered) { originX = centerX; originY = centerY; }
+  else if (zoomQuadrant === 1) { originX = plotLeft;  originY = plotBot; }
+  else if (zoomQuadrant === 2) { originX = plotRight; originY = plotBot; }
+  else if (zoomQuadrant === 3) { originX = plotRight; originY = plotTop; }
+  else                         { originX = plotLeft;  originY = plotTop; }
+
+  const guideAngles = centered
+    ? [0, 45, 90, 135, 180, 225, 270, 315]
+    : ({ 1: [0, 45, 90], 2: [90, 135, 180], 3: [180, 225, 270], 4: [270, 315, 360] }[zoomQuadrant]);
+  const labelAngles = centered ? [0, 90, 180, 270] : guideAngles;
+  const arcBounds = centered ? null
+    : ({ 1: [0, 90], 2: [90, 180], 3: [180, 270], 4: [270, 360] }[zoomQuadrant]);
+
+  // Quarter-arc path from angle a→b (degrees) at radius r, drawn in SVG y-down space.
+  // sweep=0 puts the arc's center at the polar origin, so it bulges outward (proper
+  // quarter-circle grid). sweep=1 would center it at the opposite corner (inverted).
+  const arcPath = (r, aDeg, bDeg) => {
+    const a = (aDeg * Math.PI) / 180, b = (bDeg * Math.PI) / 180;
+    const ax = originX + r * Math.cos(a), ay = originY - r * Math.sin(a);
+    const bx = originX + r * Math.cos(b), by = originY - r * Math.sin(b);
+    return `M ${ax} ${ay} A ${r} ${r} 0 0 0 ${bx} ${by}`;
   };
 
   return (
@@ -109,25 +161,35 @@ const PolarPlot = ({ data, size = 180 }) => {
       </defs>
 
       {/* Title */}
-      <text x={centerX} y="15" fontSize="9" fontWeight="bold" fill="#1e3a8a" textAnchor="middle">
-        Impedance Polar Plot
+      <text x={size / 2} y="15" fontSize="9" fontWeight="bold" fill="#1e3a8a" textAnchor="middle">
+        Impedance Polar Plot{centered ? '' : ` — Q${zoomQuadrant}`}
       </text>
 
-      {/* Grid circles */}
-      <circle cx={centerX} cy={centerY} r={maxR * 0.33} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
-      <circle cx={centerX} cy={centerY} r={maxR * 0.66} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
-      <circle cx={centerX} cy={centerY} r={maxR} fill="none" stroke="#94a3b8" strokeWidth="0.5" />
+      {/* Grid — full circles when centered, quarter-arcs when zoomed */}
+      {centered ? (
+        <>
+          <circle cx={originX} cy={originY} r={maxR * 0.33} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+          <circle cx={originX} cy={originY} r={maxR * 0.66} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+          <circle cx={originX} cy={originY} r={maxR} fill="none" stroke="#94a3b8" strokeWidth="0.5" />
+        </>
+      ) : (
+        <>
+          <path d={arcPath(maxR * 0.33, arcBounds[0], arcBounds[1])} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+          <path d={arcPath(maxR * 0.66, arcBounds[0], arcBounds[1])} fill="none" stroke="#cbd5e1" strokeWidth="0.5" />
+          <path d={arcPath(maxR,        arcBounds[0], arcBounds[1])} fill="none" stroke="#94a3b8" strokeWidth="0.5" />
+        </>
+      )}
 
       {/* Axis guide lines */}
-      {[0, 45, 90, 135, 180, 225, 270, 315].map(angle => {
+      {guideAngles.map(angle => {
         const rad = (angle * Math.PI) / 180;
-        const endX = centerX + maxR * Math.cos(rad);
-        const endY = centerY - maxR * Math.sin(rad);
+        const endX = originX + maxR * Math.cos(rad);
+        const endY = originY - maxR * Math.sin(rad);
         return (
           <line
             key={angle}
-            x1={centerX}
-            y1={centerY}
+            x1={originX}
+            y1={originY}
             x2={endX}
             y2={endY}
             stroke="#94a3b8"
@@ -138,10 +200,10 @@ const PolarPlot = ({ data, size = 180 }) => {
       })}
 
       {/* Angle Labels */}
-      {[0, 90, 180, 270].map(angle => {
+      {labelAngles.map(angle => {
         const rad = (angle * Math.PI) / 180;
-        const endX = centerX + (maxR + 10) * Math.cos(rad);
-        const endY = centerY - (maxR + 10) * Math.sin(rad);
+        const endX = originX + (maxR + 10) * Math.cos(rad);
+        const endY = originY - (maxR + 10) * Math.sin(rad);
         return (
           <text
             key={angle}
@@ -158,18 +220,18 @@ const PolarPlot = ({ data, size = 180 }) => {
         );
       })}
 
-      {/* Vectors — line from center to (r, θ), coloured per phase, arrowhead at the tip */}
+      {/* Vectors — line from origin to (r, θ), coloured per phase, arrowhead at the tip */}
       {validPoints.map(pt => {
         const r = (pt.z / maxZ) * maxR;
         const rad = (pt.deg * Math.PI) / 180;
-        const px = centerX + r * Math.cos(rad);
-        const py = centerY - r * Math.sin(rad);
+        const px = originX + r * Math.cos(rad);
+        const py = originY - r * Math.sin(rad);
         const color = phaseColors[pt.phase] || '#64748b';
         return (
           <line
             key={pt.phase}
-            x1={centerX}
-            y1={centerY}
+            x1={originX}
+            y1={originY}
             x2={px}
             y2={py}
             stroke={color}
@@ -278,9 +340,58 @@ const formatStepVoltage = (str) => {
 
 const getPassStatus = (Rc40) => {
   if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b', bg: '#f1f5f9' };
-  if (Rc40 >= 100) return { text: 'Pass (Good)', color: '#16a34a', bg: '#dcfce7' };
+  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7' };
   if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb', bg: '#dbeafe' };
   return { text: 'Fail (Low Insulation)', color: '#dc2626', bg: '#fee2e2' };
+};
+
+// SV rating from Step Resistance chart linearity.
+// Takes step-summary rows (typically t=60,120,180,240,300 with .resistance).
+// Compares actual curve to a linear fit between first and last point; rates by
+// mean absolute % deviation of the intermediate points.
+const getSVRating = (summaryRows) => {
+  if (!summaryRows || summaryRows.length < 3) {
+    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
+  }
+  const pts = summaryRows
+    .map(r => ({ t: Number(r.time), y: Number(r.resistance) }))
+    .filter(p => !isNaN(p.t) && !isNaN(p.y) && p.y > 0);
+  if (pts.length < 3) {
+    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
+  }
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const slope = (last.y - first.y) / (last.t - first.t);
+  let sum = 0, n = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const expected = first.y + slope * (pts[i].t - first.t);
+    if (expected <= 0) continue;
+    sum += Math.abs(pts[i].y - expected) / Math.abs(expected) * 100;
+    n++;
+  }
+  if (n === 0) {
+    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
+  }
+  const meanDev = sum / n;
+  if (meanDev < 10) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7', deviation: meanDev };
+  if (meanDev < 25) return { text: 'Pass (Standard)', color: '#2563eb', bg: '#dbeafe', deviation: meanDev };
+  if (meanDev < 50) return { text: 'Concern (Non-linear)', color: '#d97706', bg: '#fef3c7', deviation: meanDev };
+  return { text: 'Fail (Non-linear)', color: '#dc2626', bg: '#fee2e2', deviation: meanDev };
+};
+
+// SV step-summary rows from a run: first descending time signals repeated step
+// summary block; otherwise pick t=60,120,180,240,300 out of transient rows.
+const getSVSummaryRows = (rows) => {
+  if (!rows || rows.length === 0) return [];
+  let splitIndex = -1;
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i].time) <= Number(rows[i - 1].time)) { splitIndex = i; break; }
+  }
+  if (splitIndex !== -1) {
+    return rows.slice(splitIndex).slice().sort((a, b) => Number(a.time) - Number(b.time));
+  }
+  const targets = [60, 120, 180, 240, 300];
+  return targets.map(t => rows.find(r => Number(r.time) === t)).filter(Boolean);
 };
 
 export default function ReportScreen({ record, onChange }) {
@@ -289,7 +400,7 @@ export default function ReportScreen({ record, onChange }) {
   const [exporting, setExporting] = useState('');
   const [message, setMessage] = useState(null);
   const [lastFilePath, setLastFilePath] = useState(null);
-  const [includeRotor, setIncludeRotor] = useState(true);
+  const [includeRotor, setIncludeRotor] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -750,59 +861,11 @@ export default function ReportScreen({ record, onChange }) {
     }
 
     return (
-      <div key={`${group}_${type}_sweep`} style={{ marginBottom: 20, border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+      <div key={`${group}_${type}_sweep`} style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
         <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>{title}</h5>
-        
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16 }}>
-          <div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9, background: '#fff', border: '1px solid #cbd5e1' }}>
-              <thead>
-                <tr style={{ background: '#1e40af', color: '#fff' }}>
-                  <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                  {tableFreqs.map(f => <th key={f} style={{ padding: '4px 6px', textAlign: 'right' }}>{f}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {tablePhases.map(phase => {
-                  return (
-                    <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1' }}>
-                      <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                      {tableFreqs.map(f => {
-                        const cellData = mulData[`${group}_${type}_${phase}_${f}`];
-                        let val = cellData?.value;
-                        if (val !== undefined && type === 'res' && record?.correctWindingTo20) {
-                          const tempNum = isNaN(parseFloat(cellData.temperature)) ? 25 : parseFloat(cellData.temperature);
-                          val = parseFloat((val * (254.5 / (234.5 + tempNum))).toFixed(3));
-                        }
-                        const displayVal = val !== undefined ? (isOverload(val, type === 'res' ? 'R' : 'L') ? 'O.L' : val) : '—';
-                        return (
-                          <td key={f} style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>
-                            {displayVal}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-                {Object.keys(colImbalances).length > 0 && (
-                  <tr style={{ borderBottom: '1px solid #cbd5e1', background: '#fef3c7', fontWeight: 'bold' }}>
-                    <td style={{ padding: '4px 6px', color: '#78350f' }}>Imbalance (%)</td>
-                    {tableFreqs.map(f => (
-                      <td key={f} style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace', color: '#78350f' }}>
-                        {colImbalances[f] !== undefined ? `${colImbalances[f].toFixed(2)}%` : '—'}
-                      </td>
-                    ))}
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            {maxImbalance > 0 && (
-              <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: maxImbalance < 5 ? '#16a34a' : '#dc2626' }}>
-                Max Imbalance: {maxImbalance.toFixed(2)}% | Condition Status: {maxImbalance < 5 ? 'Normal / Good' : 'Investigate (High Imbalance)'}
-              </div>
-            )}
-          </div>
-          <div id={`chart-${group}-${type}`} style={{ height: 160, width: '100%', minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6 }}>
+
+        <div>
+          <div id={`chart-${group}-${type}`} style={{ height: 220, width: '100%', minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6 }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -867,6 +930,11 @@ export default function ReportScreen({ record, onChange }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
+          {maxImbalance > 0 && (
+            <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: maxImbalance < 5 ? '#16a34a' : '#dc2626' }}>
+              Max Imbalance: {maxImbalance.toFixed(2)}% | Condition Status: {maxImbalance < 5 ? 'Normal / Good' : 'Investigate (High Imbalance)'}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1518,7 +1586,7 @@ export default function ReportScreen({ record, onChange }) {
           <div style={{ marginBottom: 20 }}>
             <h4 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', marginBottom: 12, borderBottom: '1px solid #e2e8f0', paddingBottom: 4 }}>🌀 Multimeter Winding Test Readings</h4>
             
-            {['stator', 'rotor'].map((group) => {
+            {(includeRotor ? ['stator', 'rotor'] : ['stator']).map((group) => {
               const globalFreq = mulData[`${group}_global_freq`]?.frequency;
               const titleText = (globalFreq && globalFreq !== 'undefined') ? `${group === 'stator' ? 'Stator Winding' : 'Rotor Winding'} (Winding Freq: ${globalFreq})` : (group === 'stator' ? 'Stator Winding' : 'Rotor Winding');
               
@@ -1591,11 +1659,7 @@ export default function ReportScreen({ record, onChange }) {
                       </label>
                     )}
                   </div>
-                  {isRotor && !includeRotor ? (
-                    <div style={{ fontSize: 10, color: '#94a3b8', fontStyle: 'italic', padding: '8px 4px' }}>
-                      Rotor winding is excluded from the PDF/Excel export. Tick the box above to include it.
-                    </div>
-                  ) : (<>
+                  {(<>
                   {/* Summary Table */}
                   <div style={{ marginBottom: 16 }}>
                     <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Winding Readings Summary Table</h6>
@@ -1748,17 +1812,13 @@ export default function ReportScreen({ record, onChange }) {
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
                       <thead>
                         <tr style={{ background: '#1e40af', color: '#fff' }}>
-                          <th style={{ padding: '4px 6px', textAlign: 'left' }} rowSpan={2}>Phase Line</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'center' }}>DCR</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'center' }} colSpan={5}>ACR</th>
-                        </tr>
-                        <tr style={{ background: '#1e40af', color: '#fff', fontSize: 9 }}>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>0Hz</th>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>100Hz</th>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>120Hz</th>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>1kHz</th>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>10kHz</th>
-                          <th style={{ padding: '3px 6px', textAlign: 'right' }}>100kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>DC</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>120Hz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>1kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>10kHz</th>
+                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>100kHz</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1809,6 +1869,53 @@ export default function ReportScreen({ record, onChange }) {
                             </tr>
                           );
                         })}
+                        {(() => {
+                          const imbCell = (imb) => {
+                            if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                            const display = `${imb.toFixed(2)}%`;
+                            if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                            if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                            return { bg: '#d1fae5', text: '#065f46', display };
+                          };
+                          const tempCorrect = (val, temp) => {
+                            if (val === undefined || val === null || val === '') return null;
+                            const v = parseFloat(val);
+                            if (isNaN(v)) return null;
+                            if (!record?.correctWindingTo20) return v;
+                            const tempNum = isNaN(parseFloat(temp)) ? 25 : parseFloat(temp);
+                            return v * (254.5 / (234.5 + tempNum));
+                          };
+                          // DC column (spot DCR)
+                          const dcVals = ['1-2', '1-3', '2-3'].map(p => {
+                            const k = `${group}_res_${p}`;
+                            return tempCorrect(mulData[k]?.value, mulData[k]?.temperature);
+                          });
+                          const dcImb = calculateImbalance(dcVals[0], dcVals[1], dcVals[2]);
+                          const freqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+                            const vals = ['1-2', '1-3', '2-3'].map(p => {
+                              const k = `${group}_res_${p}_${f}`;
+                              let v = mulData[k]?.value;
+                              if (v === undefined || v === null || v === '') {
+                                const spot = mulData[`${group}_res_${p}`];
+                                if (spot?.frequency === f) v = spot?.value;
+                              }
+                              return tempCorrect(v, mulData[k]?.temperature);
+                            });
+                            return calculateImbalance(vals[0], vals[1], vals[2]);
+                          });
+                          const allImbs = [dcImb, ...freqImbs];
+                          return (
+                            <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                              <td style={{ padding: '6px 6px', color: '#1e3a8a' }}>% Imbalance</td>
+                              {allImbs.map((imb, i) => {
+                                const c = imbCell(imb);
+                                return (
+                                  <td key={i} style={{ padding: '6px 6px', textAlign: 'right', background: c.bg, color: c.text, fontFamily: 'monospace' }}>{c.display}</td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })()}
                       </tbody>
                     </table>
                   </div>
@@ -1856,46 +1963,216 @@ export default function ReportScreen({ record, onChange }) {
                             </tr>
                           );
                         })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Capacitance Table — moved to sit after Inductance */}
-                  <div style={{ marginTop: 16 }}>
-                    <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Capacitance {cleanCapFreq}</h6>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
-                      <thead>
-                        <tr style={{ background: '#1e40af', color: '#fff' }}>
-                          <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>Capacitance (nF)</th>
-                          <th style={{ padding: '4px 6px', textAlign: 'right' }}>Frequency</th>
-                        </tr>
-                      </thead>
-                      <tbody>
                         {(() => {
-                          const groupCapFreq = (capFreq && capFreq !== 'undefined') ? capFreq : '1kHz';
-                          return capacitancePhases.map((phase, idx) => {
-                            const key = `${group}_cap_${phase}`;
-                            const val = mulData[key]?.value;
-                            let freq = mulData[key]?.frequency;
-
-                            if (freq === 'undefined' || freq === null || freq === undefined || freq === '') {
-                              freq = (val !== undefined && val !== null && val !== '') ? groupCapFreq : '—';
-                            }
-
-                            const displayVal = isOverload(val, 'C') ? 'O.L' : (val !== undefined ? val : '—');
-                            return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
-                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{freq}</td>
-                              </tr>
-                            );
+                          const imbCell = (imb) => {
+                            if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                            const display = `${imb.toFixed(2)}%`;
+                            if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                            if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                            return { bg: '#d1fae5', text: '#065f46', display };
+                          };
+                          const freqImbs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].map(f => {
+                            const vals = ['1-2', '1-3', '2-3'].map(p => {
+                              let v = mulData[`${group}_ind_${p}_${f}`]?.value;
+                              if (v === undefined || v === null || v === '') {
+                                const spot = mulData[`${group}_ind_${p}`];
+                                if (spot?.frequency === f) v = spot?.value;
+                              }
+                              return v;
+                            });
+                            return calculateImbalance(vals[0], vals[1], vals[2]);
                           });
+                          return (
+                            <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                              <td style={{ padding: '6px 6px', color: '#1e3a8a' }}>% Imbalance</td>
+                              {freqImbs.map((imb, i) => {
+                                const c = imbCell(imb);
+                                return (
+                                  <td key={i} style={{ padding: '6px 6px', textAlign: 'right', background: c.bg, color: c.text, fontFamily: 'monospace' }}>{c.display}</td>
+                                );
+                              })}
+                            </tr>
+                          );
                         })()}
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Impedance + Polar + Capacitance combined row (moved above rotor winding) */}
+                  {(() => {
+                    const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+                    const hasGroupImp = impPhases.some(phase =>
+                      mulData[`${group}_imp_${phase}_z`]?.value !== undefined ||
+                      mulData[`${group}_imp_${phase}_deg`]?.value !== undefined
+                    );
+                    const hasGroupCap = capacitancePhases.some(p => {
+                      const v = mulData[`${group}_cap_${p}`]?.value;
+                      return v !== undefined && v !== null && v !== '';
+                    });
+                    if (!hasGroupImp && !hasGroupCap) return null;
+
+                    // Collect every per-phase impedance frequency; only show a single
+                    // header suffix when every populated cell shares the same frequency.
+                    // Otherwise fall back to a per-row Frequency column.
+                    const impFreqSet = new Set();
+                    impPhases.forEach(phase => {
+                      const zCell = mulData[`${group}_imp_${phase}_z`];
+                      const dCell = mulData[`${group}_imp_${phase}_deg`];
+                      const hasZ = zCell?.value !== undefined && zCell?.value !== null && zCell?.value !== '';
+                      const hasD = dCell?.value !== undefined && dCell?.value !== null && dCell?.value !== '';
+                      const fV = zCell?.frequency || dCell?.frequency;
+                      if ((hasZ || hasD) && fV && fV !== 'undefined' && fV !== 'null') {
+                        impFreqSet.add(fV);
+                      }
+                    });
+                    if (impFreqSet.size === 0 && impFreq && impFreq !== 'undefined') {
+                      impFreqSet.add(impFreq);
+                    }
+                    const impFreqs = Array.from(impFreqSet);
+                    const impSingleFreq = impFreqs.length === 1 ? impFreqs[0] : null;
+                    const impHeaderSuffix = impSingleFreq ? ` [${impSingleFreq}]` : '';
+                    const showImpFreqColumn = impFreqs.length > 1;
+
+                    const polarData = [];
+                    impPhases.forEach(phase => {
+                      const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
+                      const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
+                      if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
+                        polarData.push({
+                          phase,
+                          z: parseFloat(zVal),
+                          deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
+                        });
+                      }
+                    });
+
+                    return (
+                      <div style={{ marginTop: 16 }}>
+                        {hasGroupImp && (
+                          <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 6px 0' }}>
+                            🌀 {group === 'stator' ? 'Stator' : 'Rotor'} Winding Impedance (Z & Phase Angle){impHeaderSuffix}
+                          </h5>
+                        )}
+                        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                          {hasGroupCap && (
+                            <div style={{ flex: 0.9 }}>
+                              <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Capacitance{cleanCapFreq}</h6>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, border: '1px solid #cbd5e1' }}>
+                                <thead>
+                                  <tr style={{ background: '#1e40af', color: '#fff' }}>
+                                    <th style={{ padding: '4px 6px', textAlign: 'left' }}>Phase Line</th>
+                                    <th style={{ padding: '4px 6px', textAlign: 'right' }}>Capacitance (nF)</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {capacitancePhases.map((phase, idx) => {
+                                    const key = `${group}_cap_${phase}`;
+                                    const val = mulData[key]?.value;
+                                    const displayVal = isOverload(val, 'C') ? 'O.L' : (val !== undefined && val !== null && val !== '' ? val : '—');
+                                    return (
+                                      <tr key={phase} style={{ borderBottom: '1px solid #cbd5e1', background: idx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                        <td style={{ padding: '4px 6px', fontWeight: 600 }}>Phase {phase}</td>
+                                        <td style={{ padding: '4px 6px', textAlign: 'right', fontFamily: 'monospace' }}>{displayVal}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                  {(() => {
+                                    const imbCell = (imb) => {
+                                      if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                                      const display = `${imb.toFixed(2)}%`;
+                                      if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                                      if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                                      return { bg: '#d1fae5', text: '#065f46', display };
+                                    };
+                                    const lineVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_cap_${p}`]?.value);
+                                    let capImb = calculateImbalance(lineVals[0], lineVals[1], lineVals[2]);
+                                    if (capImb === null || capImb === undefined) {
+                                      const gndVals = ['1-GND', '2-GND', '3-GND'].map(p => mulData[`${group}_cap_${p}`]?.value);
+                                      capImb = calculateImbalance(gndVals[0], gndVals[1], gndVals[2]);
+                                    }
+                                    const c = imbCell(capImb);
+                                    return (
+                                      <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                                        <td style={{ padding: '6px 6px', color: '#1e3a8a' }}>% Imbalance</td>
+                                        <td style={{ padding: '6px 6px', textAlign: 'right', background: c.bg, color: c.text, fontFamily: 'monospace' }}>{c.display}</td>
+                                      </tr>
+                                    );
+                                  })()}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                          {hasGroupImp && (
+                            <div style={{ flex: 1.2, overflowX: 'auto' }}>
+                              <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance{impHeaderSuffix}</h6>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
+                                <thead>
+                                  <tr style={{ background: '#1e40af', color: '#fff' }}>
+                                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
+                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
+                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
+                                    {showImpFreqColumn && (
+                                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
+                                    )}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {impPhases.map((phase, pIdx) => {
+                                    const zCell = mulData[`${group}_imp_${phase}_z`];
+                                    const dCell = mulData[`${group}_imp_${phase}_deg`];
+                                    const zVal = zCell?.value;
+                                    const degVal = dCell?.value;
+                                    const rowFreq = zCell?.frequency || dCell?.frequency || impFreq || '—';
+                                    return (
+                                      <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                        <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                          {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
+                                        </td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                          {degVal !== undefined ? degVal : '—'}
+                                        </td>
+                                        {showImpFreqColumn && (
+                                          <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                            {(rowFreq && rowFreq !== 'undefined' && rowFreq !== 'null') ? rowFreq : '—'}
+                                          </td>
+                                        )}
+                                      </tr>
+                                    );
+                                  })}
+                                  {(() => {
+                                    const imbCell = (imb) => {
+                                      if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                                      const display = `${imb.toFixed(2)}%`;
+                                      if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                                      if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                                      return { bg: '#d1fae5', text: '#065f46', display };
+                                    };
+                                    const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
+                                    const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_deg`]?.value);
+                                    const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+                                    const degImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
+                                    const cz = imbCell(zImb);
+                                    const cd = imbCell(degImb);
+                                    return (
+                                      <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                                        <td style={{ padding: '6px 8px', color: '#1e3a8a' }}>% Imbalance</td>
+                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cz.bg, color: cz.text, fontFamily: 'monospace' }}>{cz.display}</td>
+                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cd.bg, color: cd.text, fontFamily: 'monospace' }}>{cd.display}</td>
+                                        {showImpFreqColumn && (
+                                          <td style={{ padding: '6px 8px' }}>&nbsp;</td>
+                                        )}
+                                      </tr>
+                                    );
+                                  })()}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   </>)}
                 </div>
               );
@@ -1953,87 +2230,49 @@ export default function ReportScreen({ record, onChange }) {
               </div>
             )}
 
-            {/* Winding Impedance Tables */}
-            {['stator', 'rotor'].map(group => {
-              if (group === 'rotor' && !includeRotor) return null;
+            {/* Impedance Polar Plots — col-md-6 each, before sweep charts */}
+            {(() => {
               const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-              const hasGroupImp = impPhases.some(phase =>
-                mulData[`${group}_imp_${phase}_z`]?.value !== undefined ||
-                mulData[`${group}_imp_${phase}_deg`]?.value !== undefined
-              );
-              if (!hasGroupImp) return null;
+              const buildPolarData = (group) => {
+                const arr = [];
+                impPhases.forEach(phase => {
+                  const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
+                  const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
+                  if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
+                    arr.push({
+                      phase,
+                      z: parseFloat(zVal),
+                      deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
+                    });
+                  }
+                });
+                return arr;
+              };
+              const statorPolar = buildPolarData('stator');
+              const rotorPolar = includeRotor ? buildPolarData('rotor') : [];
+              if (statorPolar.length === 0 && rotorPolar.length === 0) return null;
               return (
-                <div key={`${group}_impedance`} style={{ marginTop: 14 }}>
-                  <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 6px 0' }}>
-                    🌀 {group === 'stator' ? 'Stator' : 'Rotor'} Winding Impedance (Z & Phase Angle)
-                  </h5>
-                  <div style={{ display: 'flex', gap: 16 }}>
-                    <div style={{ flex: 1.2, overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
-                        <thead>
-                          <tr style={{ background: '#1e40af', color: '#fff' }}>
-                            <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
-                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
-                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
-                            <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {impPhases.map((phase, pIdx) => {
-                            const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
-                            const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
-                            const fVal = mulData[`${group}_imp_${phase}_z`]?.frequency;
-                            const dVal = mulData[`${group}_imp_${phase}_deg`]?.frequency;
-                            const groupImpFreq = mulData[`${group}_imp_freq`]?.frequency;
-                            let freq = '—';
-                            if (fVal && fVal !== 'undefined' && fVal !== 'null') {
-                              freq = fVal;
-                            } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
-                              freq = dVal;
-                            } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
-                              freq = groupImpFreq;
-                            }
-                            return (
-                              <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
-                                <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                  {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
-                                </td>
-                                <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                  {degVal !== undefined ? degVal : '—'}
-                                </td>
-                                <td style={{ padding: '5px 8px', textAlign: 'right' }}>{freq}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    {/* Polar Graph on the right */}
-                    {(() => {
-                      const polarData = [];
-                      impPhases.forEach(phase => {
-                        const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
-                        const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
-                        if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
-                          polarData.push({
-                            phase,
-                            z: parseFloat(zVal),
-                            deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
-                          });
-                        }
-                      });
-                      if (polarData.length === 0) return null;
-                      return (
-                        <div id={`chart-polar-${group}`} style={{ flex: 0.8, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                          <PolarPlot data={polarData} size={180} />
-                        </div>
-                      );
-                    })()}
+                <div style={{ marginTop: 20 }}>
+                  <h4 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', marginBottom: 12, borderBottom: '1px solid #e2e8f0', paddingBottom: 4 }}>
+                    🎯 Impedance Polar Plots
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                    {statorPolar.length > 0 && (
+                      <div id="chart-polar-stator" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
+                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Stator Impedance Polar Plot</h5>
+                        <PolarPlot data={statorPolar} size={220} />
+                      </div>
+                    )}
+                    {rotorPolar.length > 0 && (
+                      <div id="chart-polar-rotor" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
+                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Rotor Impedance Polar Plot</h5>
+                        <PolarPlot data={rotorPolar} size={220} />
+                      </div>
+                    )}
                   </div>
                 </div>
               );
-            })}
+            })()}
 
             {/* Frequency Sweep Tables */}
             {(hasLStatorSweep || hasLRotorSweep || hasRStatorSweep || hasRRotorSweep) && (
@@ -2042,10 +2281,37 @@ export default function ReportScreen({ record, onChange }) {
                   📈 Winding Frequency Response
                 </h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {renderSweepTable('Stator Inductance Sweep (mH)', 'stator', 'ind')}
-                  {renderSweepTable('Stator AC Winding Resistance Sweep (Ω)', 'stator', 'res')}
-                  {includeRotor && renderSweepTable('Rotor Inductance Sweep (mH)', 'rotor', 'ind')}
-                  {includeRotor && renderSweepTable('Rotor AC Winding Resistance Sweep (Ω)', 'rotor', 'res')}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                    {renderSweepTable('Stator Inductance Sweep (mH)', 'stator', 'ind')}
+                    {renderSweepTable('Stator AC Winding Resistance Sweep (Ω)', 'stator', 'res')}
+                  </div>
+                  {includeRotor && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                      {renderSweepTable('Rotor Inductance Sweep (mH)', 'rotor', 'ind')}
+                      {renderSweepTable('Rotor AC Winding Resistance Sweep (Ω)', 'rotor', 'res')}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Rotor Winding placeholder — after graphs; only when rotor excluded */}
+            {!includeRotor && (
+              <div style={{ marginTop: 24, border: '1px solid #cbd5e1', borderRadius: 8, padding: 16, background: '#f8fafc' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 12px 0', gap: 12 }}>
+                  <h5 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', margin: 0 }}>Rotor Winding</h5>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600, color: '#475569', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={includeRotor}
+                      onChange={(e) => setIncludeRotor(e.target.checked)}
+                      style={{ width: 16, height: 16, cursor: 'pointer' }}
+                    />
+                    Include in report
+                  </label>
+                </div>
+                <div style={{ fontSize: 10, color: '#94a3b8', fontStyle: 'italic', padding: '8px 4px' }}>
+                  Rotor winding is excluded from the PDF/Excel export. Tick the box above to include it.
                 </div>
               </div>
             )}
@@ -2098,6 +2364,13 @@ export default function ReportScreen({ record, onChange }) {
 
                               const ddVal = rows.length > 2 ? '1.38' : '—';
 
+                              // Rating: SV uses chart linearity (blue vs red-linear-fit);
+                              // other modes use IEEE 43 corrected-R40 threshold.
+                              const ratingBasis = record?.correctInsulationTo40 ? Rc40 : Rt;
+                              const rating = tab === 'SV'
+                                ? getSVRating(getSVSummaryRows(rows))
+                                : getPassStatus(ratingBasis);
+
                               return (
                                 <div style={{
                                   display: 'grid',
@@ -2109,10 +2382,12 @@ export default function ReportScreen({ record, onChange }) {
                                   padding: 10,
                                   marginBottom: 12
                                 }}>
-                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                                    <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>PI</span>
-                                    <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{pi}</span>
-                                  </div>
+                                  {tab !== 'DAR' && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                                      <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>PI</span>
+                                      <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{pi}</span>
+                                    </div>
+                                  )}
 
                                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
                                     <span style={{ fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>DAR</span>
@@ -2139,6 +2414,15 @@ export default function ReportScreen({ record, onChange }) {
                                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: '#fff', borderRadius: 6, border: '1px solid #e2e8f0' }}>
                                     <span style={{ fontSize: 8, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Corrected R40</span>
                                     <span style={{ fontSize: 11, fontWeight: 800, color: '#1e3a8a', marginTop: 2, textAlign: 'center' }}>{corrR40Str}</span>
+                                  </div>
+
+                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: rating.bg, borderRadius: 6, border: `1px solid ${rating.color}` }}
+                                    title={tab === 'SV' && rating.deviation !== null && rating.deviation !== undefined
+                                      ? `Mean deviation from linear fit: ${rating.deviation.toFixed(1)}%`
+                                      : undefined}
+                                  >
+                                    <span style={{ fontSize: 8, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Rating</span>
+                                    <span style={{ fontSize: 11, fontWeight: 800, color: rating.color, marginTop: 2, textAlign: 'center' }}>{rating.text}</span>
                                   </div>
                                 </div>
                               );
@@ -2223,13 +2507,13 @@ export default function ReportScreen({ record, onChange }) {
                                             <ResponsiveContainer width="100%" height="100%">
                                               <LineChart data={transientRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
                                                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                <XAxis dataKey="time" padding={{ left: 5, right: 10 }} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </XAxis>
                                                 <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </YAxis>
-                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} wrapperStyle={{ zIndex: 100 }} />
                                                 <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={{ r: 4 }} />
                                               </LineChart>
                                             </ResponsiveContainer>
@@ -2242,13 +2526,13 @@ export default function ReportScreen({ record, onChange }) {
                                             <ResponsiveContainer width="100%" height="100%">
                                               <LineChart data={summaryRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
                                                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                <XAxis dataKey="time" padding={{ left: 5, right: 10 }} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </XAxis>
                                                 <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </YAxis>
-                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} wrapperStyle={{ zIndex: 100 }} />
                                                 <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
                                               </LineChart>
                                             </ResponsiveContainer>
@@ -2271,13 +2555,13 @@ export default function ReportScreen({ record, onChange }) {
                                                 };
                                               })} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
                                                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                                <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                                <XAxis dataKey="time" padding={{ left: 5, right: 10 }} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </XAxis>
                                                 <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? Math.round(val).toLocaleString() : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                   <Label value="Resistance (MΩ)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                                 </YAxis>
-                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                                <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} wrapperStyle={{ zIndex: 100 }} />
                                                 <Line type="linear" dataKey="resistance" name="R (MΩ)" stroke="#10b981" strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
                                               </LineChart>
                                             </ResponsiveContainer>
@@ -2294,13 +2578,13 @@ export default function ReportScreen({ record, onChange }) {
                                           <ResponsiveContainer width="100%" height="100%">
                                             <LineChart data={transientRows} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
                                               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                              <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                              <XAxis dataKey="time" padding={{ left: 5, right: 10 }} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                 <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                               </XAxis>
                                               <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? val.toFixed(4) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                                 <Label value="Current (uA)" angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                               </YAxis>
-                                              <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                              <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} wrapperStyle={{ zIndex: 100 }} />
                                               <Line type="monotone" dataKey="current" name="I (uA)" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={{ r: 4 }} />
                                             </LineChart>
                                           </ResponsiveContainer>
@@ -2355,13 +2639,13 @@ export default function ReportScreen({ record, onChange }) {
                                         });
                                       })()} margin={{ top: 5, right: 10, left: 15, bottom: 15 }}>
                                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                                        <XAxis dataKey="time" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+                                        <XAxis dataKey="time" padding={{ left: 5, right: 10 }} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                           <Label value="Time (s)" offset={-2} position="insideBottom" style={{ fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                         </XAxis>
                                         <YAxis width={45} tickFormatter={(val) => typeof val === 'number' ? (yAxisKey === 'current' ? val.toFixed(4) : Math.round(val).toLocaleString()) : val} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
                                           <Label value={yAxisLabel} angle={-90} position="insideLeft" offset={-5} style={{ textAnchor: 'middle', fontSize: 7, fill: '#64748b', fontWeight: 600 }} />
                                         </YAxis>
-                                        <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} />
+                                        <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4 }} wrapperStyle={{ zIndex: 100 }} />
                                         <Line type="monotone" dataKey={yAxisKey} name={lineName} stroke={strokeColor} strokeWidth={1.5} dot={tab === 'PI' ? false : { r: 2 }} activeDot={{ r: 4 }} />
                                       </LineChart>
                                     </ResponsiveContainer>
