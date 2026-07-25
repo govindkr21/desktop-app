@@ -338,45 +338,144 @@ const formatStepVoltage = (str) => {
   return lastPart;
 };
 
-const getPassStatus = (Rc40) => {
-  if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b', bg: '#f1f5f9' };
-  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7' };
-  if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb', bg: '#dbeafe' };
-  return { text: 'Fail (Low Insulation)', color: '#dc2626', bg: '#fee2e2' };
+// ─── Sarox Motor Condition Assessment bands (per docx spec) ────────────────
+const RATING_STYLES = {
+  Excellent: { color: '#166534', bg: '#dcfce7' },
+  Good:      { color: '#15803d', bg: '#d1fae5' },
+  Normal:    { color: '#1e40af', bg: '#dbeafe' },
+  Observe:   { color: '#b45309', bg: '#fef3c7' },
+  Caution:   { color: '#c2410c', bg: '#ffedd5' },
+  Alarm:     { color: '#b91c1c', bg: '#fee2e2' },
+};
+const RATING_ORDER = ['Excellent', 'Good', 'Normal', 'Observe', 'Caution', 'Alarm'];
+const NONE_RATING = { text: '—', color: '#64748b', bg: '#f1f5f9' };
+const worstBand = (a, b) => {
+  if (!a) return b;
+  if (!b) return a;
+  return RATING_ORDER.indexOf(a) >= RATING_ORDER.indexOf(b) ? a : b;
+};
+const bandToRating = (band) => band ? { text: band, ...RATING_STYLES[band] } : NONE_RATING;
+
+const ratePI = (v) => {
+  const x = Number(v);
+  if (!isFinite(x)) return NONE_RATING;
+  if (x > 4.0) return bandToRating('Excellent');
+  if (x >= 2.5) return bandToRating('Good');
+  if (x >= 2.0) return bandToRating('Normal');
+  if (x >= 1.5) return bandToRating('Observe');
+  if (x >= 1.0) return bandToRating('Caution');
+  return bandToRating('Alarm');
 };
 
-// SV rating from Step Resistance chart linearity.
-// Takes step-summary rows (typically t=60,120,180,240,300 with .resistance).
-// Compares actual curve to a linear fit between first and last point; rates by
-// mean absolute % deviation of the intermediate points.
-const getSVRating = (summaryRows) => {
-  if (!summaryRows || summaryRows.length < 3) {
-    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
-  }
+const rateDAR = (v) => {
+  const x = Number(v);
+  if (!isFinite(x)) return NONE_RATING;
+  if (x > 1.60) return bandToRating('Excellent');
+  if (x >= 1.45) return bandToRating('Good');
+  if (x >= 1.30) return bandToRating('Normal');
+  if (x >= 1.20) return bandToRating('Observe');
+  if (x >= 1.10) return bandToRating('Caution');
+  return bandToRating('Alarm');
+};
+
+// SV Step Voltage Resistance Settlement — worst % decrease between consecutive
+// step-resistance points. Bands per docx: <5 Excellent … >50 Alarm.
+const rateSVSettlement = (summaryRows) => {
+  if (!summaryRows || summaryRows.length < 2) return { ...NONE_RATING, decrease: null };
   const pts = summaryRows
-    .map(r => ({ t: Number(r.time), y: Number(r.resistance) }))
-    .filter(p => !isNaN(p.t) && !isNaN(p.y) && p.y > 0);
-  if (pts.length < 3) {
-    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
+    .map(r => Number(r.resistance))
+    .filter(v => isFinite(v) && v > 0);
+  if (pts.length < 2) return { ...NONE_RATING, decrease: null };
+  let maxDrop = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i] < pts[i - 1]) {
+      const drop = (pts[i - 1] - pts[i]) / pts[i - 1] * 100;
+      if (drop > maxDrop) maxDrop = drop;
+    }
   }
-  const first = pts[0];
-  const last = pts[pts.length - 1];
-  const slope = (last.y - first.y) / (last.t - first.t);
-  let sum = 0, n = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const expected = first.y + slope * (pts[i].t - first.t);
-    if (expected <= 0) continue;
-    sum += Math.abs(pts[i].y - expected) / Math.abs(expected) * 100;
-    n++;
+  let band;
+  if (maxDrop < 5) band = 'Excellent';
+  else if (maxDrop < 10) band = 'Good';
+  else if (maxDrop < 20) band = 'Normal';
+  else if (maxDrop < 35) band = 'Observe';
+  else if (maxDrop < 50) band = 'Caution';
+  else band = 'Alarm';
+  return { ...bandToRating(band), decrease: maxDrop };
+};
+
+// RAMP has no docx rule — fall back to IEEE-43 corrected-R40 thresholds
+// mapped onto the same 6 bands so labels stay consistent across the report.
+const rateInsulationRc40 = (Rc40) => {
+  if (Rc40 === null || Rc40 === undefined || !isFinite(Number(Rc40))) return NONE_RATING;
+  const v = Number(Rc40);
+  if (v >= 100) return bandToRating('Excellent');
+  if (v >= 50) return bandToRating('Good');
+  if (v >= 10) return bandToRating('Normal');
+  if (v >= 5) return bandToRating('Observe');
+  if (v >= 1) return bandToRating('Caution');
+  return bandToRating('Alarm');
+};
+
+// Winding imbalance bands (% for res/ind/imp, degrees for phase angle)
+const rateImbalance = (kind, val) => {
+  if (val === null || val === undefined || !isFinite(Number(val))) return NONE_RATING;
+  const v = Math.abs(Number(val));
+  const bands = ['Excellent', 'Good', 'Normal', 'Observe', 'Caution', 'Alarm'];
+  const thresholds =
+    kind === 'dcRes' ? [1, 2, 3, 5, 8] :
+    kind === 'acRes' ? [1, 2, 4, 6, 10] :
+    kind === 'ind'   ? [2, 4, 6, 8, 10] :
+    kind === 'imp'   ? [2, 4, 6, 8, 10] :
+    kind === 'phase' ? [0.3, 0.6, 1.0, 1.5, 2.0] :
+                       [2, 4, 6, 8, 10];
+  for (let i = 0; i < thresholds.length; i++) {
+    if (v < thresholds[i]) return bandToRating(bands[i]);
   }
-  if (n === 0) {
-    return { text: '—', color: '#64748b', bg: '#f1f5f9', deviation: null };
-  }
-  const meanDev = sum / n;
-  if (meanDev < 10) return { text: 'Pass (Excellent)', color: '#16a34a', bg: '#dcfce7', deviation: meanDev };
-  if (meanDev < 25) return { text: 'Pass (Standard)', color: '#2563eb', bg: '#dbeafe', deviation: meanDev };
-  if (meanDev < 50) return { text: 'Concern (Non-linear)', color: '#d97706', bg: '#fef3c7', deviation: meanDev };
-  return { text: 'Fail (Non-linear)', color: '#dc2626', bg: '#fee2e2', deviation: meanDev };
+  return bandToRating('Alarm');
+};
+
+// Route a table's rating by test mode, per docx (PI ratio, DAR ratio, SV
+// settlement, RAMP → IEEE-43 fallback).
+const rateInsulationTable = ({ tab, pi, dar, svSummaryRows, Rc40, Rt, correctionOn }) => {
+  if (tab === 'PI')  return ratePI(pi);
+  if (tab === 'DAR') return rateDAR(dar);
+  if (tab === 'SV')  return rateSVSettlement(svSummaryRows);
+  return rateInsulationRc40(correctionOn ? Rc40 : Rt);
+};
+
+// Overall insulation band = worst band across every populated PI/DAR/SV/RAMP
+// run in insData. Returns null if there is no insulation data at all.
+const computeOverallInsulationBand = (insData, record) => {
+  if (!insData) return null;
+  let worst = null;
+  let anyData = false;
+  Object.keys(insData).forEach(tab => {
+    const tabData = insData[tab] || {};
+    Object.keys(tabData).forEach(tableId => {
+      if (tableId.endsWith('_meta')) return;
+      const rows = tabData[tableId];
+      if (!Array.isArray(rows) || rows.length === 0) return;
+      anyData = true;
+      const runMeta = tabData[`${tableId}_meta`] || {};
+      const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record?.temperature || 25);
+      const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+      const Rt = rows[rows.length - 1].resistance;
+      const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
+      const r30 = rows.find(r => r.time >= 30)?.resistance;
+      const r60 = rows.find(r => r.time >= 60)?.resistance;
+      const r600 = rows.find(r => r.time >= 600)?.resistance;
+      const pi = r600 && r60 ? r600 / r60 : null;
+      const dar = r60 && r30 ? r60 / r30 : null;
+      const svRows = tab === 'SV' ? getSVSummaryRows(rows) : null;
+      const rating = rateInsulationTable({
+        tab, pi, dar, svSummaryRows: svRows,
+        Rc40, Rt, correctionOn: !!record?.correctInsulationTo40,
+      });
+      if (rating.text && rating.text !== '—') worst = worstBand(worst, rating.text);
+    });
+  });
+  return anyData ? (worst || 'Normal') : null;
 };
 
 // SV step-summary rows from a run: first descending time signals repeated step
@@ -1080,38 +1179,18 @@ export default function ReportScreen({ record, onChange }) {
               // Calculate default automatic value if not manually set
               let autoVal = '—';
               if (c.key === 'condInsulation') {
-                const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
-                if (hasIns) {
-                  let overallPass = 'Pass (Good)';
-                  Object.keys(insData).forEach(tab => {
-                    const tabData = insData[tab] || {};
-                    const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
-                    activeTables.forEach(tableId => {
-                      const rows = tabData[tableId];
-                      const runMeta = tabData[`${tableId}_meta`] || {};
-                      const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record?.temperature || 25);
-                      const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-                      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-                      const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
-                      const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-                      const status = getPassStatus(record?.correctInsulationTo40 ? Rc40 : Rt);
-                      if (status.text.includes('Fail')) overallPass = 'Fail';
-                      else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
-                    });
-                  });
-                  autoVal = overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
-                }
+                autoVal = computeOverallInsulationBand(insData, record) || '—';
               } else if (c.key === 'condResistance') {
                 if (statorResImb !== null) {
-                  autoVal = statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = rateImbalance('acRes', statorResImb).text;
                 }
               } else if (c.key === 'condInductance') {
                 if (statorIndImb !== null) {
-                  autoVal = statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = rateImbalance('ind', statorIndImb).text;
                 }
               } else if (c.key === 'condImpedance') {
                 if (statorImpImb !== null) {
-                  autoVal = statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = rateImbalance('imp', statorImpImb).text;
                 } else {
                   const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
                   if (hasImp) autoVal = 'Normal';
@@ -1128,7 +1207,7 @@ export default function ReportScreen({ record, onChange }) {
                   });
                 });
                 if (maxSwImb > 0) {
-                  autoVal = maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm');
+                  autoVal = rateImbalance('acRes', maxSwImb).text;
                 }
               }
 
@@ -1143,17 +1222,13 @@ export default function ReportScreen({ record, onChange }) {
                     onChange={e => onChange(c.key, e.target.value)}
                     style={{
                       fontSize: 10, padding: '4px 6px', borderRadius: 4, border: '1px solid #cbd5e1',
-                      background: displayVal === 'Good' ? '#dcfce7' : displayVal === 'Normal' ? '#dbeafe' : displayVal === 'Caution' ? '#fef9c3' : displayVal === 'Alarm' ? '#fee2e2' : displayVal === 'Observe' ? '#f3e8ff' : '#f1f5f9',
-                      color: displayVal === 'Good' ? '#166534' : displayVal === 'Normal' ? '#1d4ed8' : displayVal === 'Caution' ? '#854d0e' : displayVal === 'Alarm' ? '#991b1b' : displayVal === 'Observe' ? '#6b21a8' : '#475569',
+                      background: (RATING_STYLES[displayVal] || {}).bg || '#f1f5f9',
+                      color: (RATING_STYLES[displayVal] || {}).color || '#475569',
                       fontWeight: 'bold', cursor: 'pointer'
                     }}
                   >
                     <option value="">Auto ({autoVal})</option>
-                    <option value="Good">Good</option>
-                    <option value="Normal">Normal</option>
-                    <option value="Caution">Caution</option>
-                    <option value="Alarm">Alarm</option>
-                    <option value="Observe">Observe</option>
+                    {RATING_ORDER.map(b => <option key={b} value={b}>{b}</option>)}
                   </select>
                 </div>
               );
@@ -1500,34 +1575,11 @@ export default function ReportScreen({ record, onChange }) {
               <tbody>
                 <tr>
                   {[
-                    { key: 'condInsulation', auto: () => {
-                      const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
-                      if (!hasIns) return '—';
-                      let overallPass = 'Pass (Good)';
-                      Object.keys(insData).forEach(tab => {
-                        const tabData = insData[tab] || {};
-                        const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
-                        activeTables.forEach(tableId => {
-                          const rows = tabData[tableId];
-                          const runMeta = tabData[`${tableId}_meta`] || {};
-                          const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record?.temperature || 25);
-                          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-                          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-                          const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
-                          const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-                          const status = getPassStatus(record?.correctInsulationTo40 ? Rc40 : Rt);
-                          if (status.text.includes('Fail')) overallPass = 'Fail';
-                          else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
-                        });
-                      });
-                      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
-                    }},
-                    { key: 'condResistance', auto: () => statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—' },
-                    { key: 'condInductance', auto: () => statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—' },
+                    { key: 'condInsulation', auto: () => computeOverallInsulationBand(insData, record) || '—' },
+                    { key: 'condResistance', auto: () => statorResImb !== null ? rateImbalance('acRes', statorResImb).text : '—' },
+                    { key: 'condInductance', auto: () => statorIndImb !== null ? rateImbalance('ind', statorIndImb).text : '—' },
                     { key: 'condImpedance', auto: () => {
-                      if (statorImpImb !== null) {
-                        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
-                      }
+                      if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
                       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
                       return hasImp ? 'Normal' : '—';
                     }},
@@ -1542,29 +1594,14 @@ export default function ReportScreen({ record, onChange }) {
                           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
                         });
                       });
-                      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+                      return maxSwImb > 0 ? rateImbalance('acRes', maxSwImb).text : '—';
                     }}
                   ].map(c => {
                     const autoVal = c.auto();
                     const val = record?.[c.key] || autoVal;
                     
-                    const bgColors = {
-                      'Good': '#dcfce7',
-                      'Normal': '#dbeafe',
-                      'Caution': '#fef9c3',
-                      'Alarm': '#fee2e2',
-                      'Observe': '#f3e8ff'
-                    };
-                    const textColors = {
-                      'Good': '#155724',
-                      'Normal': '#004085',
-                      'Caution': '#856404',
-                      'Alarm': '#721c24',
-                      'Observe': '#6b21a8'
-                    };
-
-                    const bg = bgColors[val] || '#fff';
-                    const color = textColors[val] || '#475569';
+                    const bg = (RATING_STYLES[val] || {}).bg || '#fff';
+                    const color = (RATING_STYLES[val] || {}).color || '#475569';
 
                     return (
                       <td key={c.key} style={{
@@ -2364,12 +2401,16 @@ export default function ReportScreen({ record, onChange }) {
 
                               const ddVal = rows.length > 2 ? '1.38' : '—';
 
-                              // Rating: SV uses chart linearity (blue vs red-linear-fit);
-                              // other modes use IEEE 43 corrected-R40 threshold.
-                              const ratingBasis = record?.correctInsulationTo40 ? Rc40 : Rt;
-                              const rating = tab === 'SV'
-                                ? getSVRating(getSVSummaryRows(rows))
-                                : getPassStatus(ratingBasis);
+                              // Rating per Sarox docx: PI ratio, DAR ratio, SV settlement %,
+                              // RAMP falls back to IEEE-43 Rc40 bands.
+                              const rating = rateInsulationTable({
+                                tab,
+                                pi: pi === '—' ? null : Number(pi),
+                                dar: dar === '—' ? null : Number(dar),
+                                svSummaryRows: tab === 'SV' ? getSVSummaryRows(rows) : null,
+                                Rc40, Rt,
+                                correctionOn: !!record?.correctInsulationTo40,
+                              });
 
                               return (
                                 <div style={{
@@ -2417,8 +2458,8 @@ export default function ReportScreen({ record, onChange }) {
                                   </div>
 
                                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', background: rating.bg, borderRadius: 6, border: `1px solid ${rating.color}` }}
-                                    title={tab === 'SV' && rating.deviation !== null && rating.deviation !== undefined
-                                      ? `Mean deviation from linear fit: ${rating.deviation.toFixed(1)}%`
+                                    title={tab === 'SV' && rating.decrease !== null && rating.decrease !== undefined
+                                      ? `Worst step-to-step resistance decrease: ${rating.decrease.toFixed(1)}%`
                                       : undefined}
                                   >
                                     <span style={{ fontSize: 8, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Rating</span>

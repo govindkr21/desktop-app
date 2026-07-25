@@ -293,39 +293,142 @@ function splitSVData(rows) {
   return { transientRows, summaryRows };
 }
 
-// Helper to check pass/fail status (IEEE 43 corrected-R40 thresholds)
-function getPassStatus(Rc40) {
-  if (Rc40 === null || Rc40 === undefined) return { text: '—', color: '#64748b' };
-  if (Rc40 >= 100) return { text: 'Pass (Excellent)', color: '#16a34a' };
-  if (Rc40 >= 5) return { text: 'Pass (Standard)', color: '#2563eb' };
-  return { text: 'Fail (Low Insulation)', color: '#dc2626' };
+// ─── Sarox Motor Condition Assessment bands (per docx spec) ────────────────
+const RATING_STYLES = {
+  Excellent: { color: '#166534', bg: '#dcfce7' },
+  Good:      { color: '#15803d', bg: '#d1fae5' },
+  Normal:    { color: '#1e40af', bg: '#dbeafe' },
+  Observe:   { color: '#b45309', bg: '#fef3c7' },
+  Caution:   { color: '#c2410c', bg: '#ffedd5' },
+  Alarm:     { color: '#b91c1c', bg: '#fee2e2' },
+};
+const RATING_ORDER = ['Excellent', 'Good', 'Normal', 'Observe', 'Caution', 'Alarm'];
+const NONE_RATING = { text: '—', color: '#64748b', bg: '#f1f5f9' };
+function worstBand(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return RATING_ORDER.indexOf(a) >= RATING_ORDER.indexOf(b) ? a : b;
+}
+function bandToRating(band) {
+  return band ? { text: band, ...RATING_STYLES[band] } : NONE_RATING;
 }
 
-// SV rating based on Step Resistance chart linearity — measures mean absolute
-// % deviation of intermediate points from the straight line drawn between the
-// first and last step-resistance points. Larger deviation = worse rating.
-function getSVRating(summaryRows) {
-  if (!summaryRows || summaryRows.length < 3) return { text: '—', color: '#64748b', deviation: null };
+function ratePI(v) {
+  const x = Number(v);
+  if (!isFinite(x)) return NONE_RATING;
+  if (x > 4.0) return bandToRating('Excellent');
+  if (x >= 2.5) return bandToRating('Good');
+  if (x >= 2.0) return bandToRating('Normal');
+  if (x >= 1.5) return bandToRating('Observe');
+  if (x >= 1.0) return bandToRating('Caution');
+  return bandToRating('Alarm');
+}
+
+function rateDAR(v) {
+  const x = Number(v);
+  if (!isFinite(x)) return NONE_RATING;
+  if (x > 1.60) return bandToRating('Excellent');
+  if (x >= 1.45) return bandToRating('Good');
+  if (x >= 1.30) return bandToRating('Normal');
+  if (x >= 1.20) return bandToRating('Observe');
+  if (x >= 1.10) return bandToRating('Caution');
+  return bandToRating('Alarm');
+}
+
+// SV Step Voltage Resistance Settlement — worst % decrease between consecutive
+// step-resistance points. Bands per docx: <5 Excellent … >50 Alarm.
+function rateSVSettlement(summaryRows) {
+  if (!summaryRows || summaryRows.length < 2) return Object.assign({}, NONE_RATING, { decrease: null });
   const pts = summaryRows
-    .map(r => ({ t: Number(r.time), y: Number(r.resistance) }))
-    .filter(p => !isNaN(p.t) && !isNaN(p.y) && p.y > 0);
-  if (pts.length < 3) return { text: '—', color: '#64748b', deviation: null };
-  const first = pts[0];
-  const last = pts[pts.length - 1];
-  const slope = (last.y - first.y) / (last.t - first.t);
-  let sum = 0, n = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const expected = first.y + slope * (pts[i].t - first.t);
-    if (expected <= 0) continue;
-    sum += Math.abs(pts[i].y - expected) / Math.abs(expected) * 100;
-    n++;
+    .map(r => Number(r.resistance))
+    .filter(v => isFinite(v) && v > 0);
+  if (pts.length < 2) return Object.assign({}, NONE_RATING, { decrease: null });
+  let maxDrop = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i] < pts[i - 1]) {
+      const drop = (pts[i - 1] - pts[i]) / pts[i - 1] * 100;
+      if (drop > maxDrop) maxDrop = drop;
+    }
   }
-  if (n === 0) return { text: '—', color: '#64748b', deviation: null };
-  const meanDev = sum / n;
-  if (meanDev < 10) return { text: 'Pass (Excellent)', color: '#16a34a', deviation: meanDev };
-  if (meanDev < 25) return { text: 'Pass (Standard)', color: '#2563eb', deviation: meanDev };
-  if (meanDev < 50) return { text: 'Concern (Non-linear)', color: '#d97706', deviation: meanDev };
-  return { text: 'Fail (Non-linear)', color: '#dc2626', deviation: meanDev };
+  let band;
+  if (maxDrop < 5) band = 'Excellent';
+  else if (maxDrop < 10) band = 'Good';
+  else if (maxDrop < 20) band = 'Normal';
+  else if (maxDrop < 35) band = 'Observe';
+  else if (maxDrop < 50) band = 'Caution';
+  else band = 'Alarm';
+  return Object.assign({}, bandToRating(band), { decrease: maxDrop });
+}
+
+// RAMP fallback: no docx rule — map IEEE-43 corrected-R40 thresholds onto the
+// same 6 bands so labels stay consistent across the report.
+function rateInsulationRc40(Rc40) {
+  if (Rc40 === null || Rc40 === undefined || !isFinite(Number(Rc40))) return NONE_RATING;
+  const v = Number(Rc40);
+  if (v >= 100) return bandToRating('Excellent');
+  if (v >= 50) return bandToRating('Good');
+  if (v >= 10) return bandToRating('Normal');
+  if (v >= 5) return bandToRating('Observe');
+  if (v >= 1) return bandToRating('Caution');
+  return bandToRating('Alarm');
+}
+
+function rateImbalance(kind, val) {
+  if (val === null || val === undefined || !isFinite(Number(val))) return NONE_RATING;
+  const v = Math.abs(Number(val));
+  const bands = ['Excellent', 'Good', 'Normal', 'Observe', 'Caution', 'Alarm'];
+  const thresholds =
+    kind === 'dcRes' ? [1, 2, 3, 5, 8] :
+    kind === 'acRes' ? [1, 2, 4, 6, 10] :
+    kind === 'ind'   ? [2, 4, 6, 8, 10] :
+    kind === 'imp'   ? [2, 4, 6, 8, 10] :
+    kind === 'phase' ? [0.3, 0.6, 1.0, 1.5, 2.0] :
+                       [2, 4, 6, 8, 10];
+  for (let i = 0; i < thresholds.length; i++) {
+    if (v < thresholds[i]) return bandToRating(bands[i]);
+  }
+  return bandToRating('Alarm');
+}
+
+function rateInsulationTable(args) {
+  const { tab, pi, dar, svSummaryRows, Rc40, Rt, correctionOn } = args;
+  if (tab === 'PI')  return ratePI(pi);
+  if (tab === 'DAR') return rateDAR(dar);
+  if (tab === 'SV')  return rateSVSettlement(svSummaryRows);
+  return rateInsulationRc40(correctionOn ? Rc40 : Rt);
+}
+
+function computeOverallInsulationBand(insData, record) {
+  if (!insData) return null;
+  let worst = null;
+  let anyData = false;
+  Object.keys(insData).forEach(function (tab) {
+    const tabData = insData[tab] || {};
+    Object.keys(tabData).forEach(function (tableId) {
+      if (tableId.endsWith('_meta')) return;
+      const rows = tabData[tableId];
+      if (!Array.isArray(rows) || rows.length === 0) return;
+      anyData = true;
+      const runMeta = tabData[tableId + '_meta'] || {};
+      const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record && record.temperature ? record.temperature : 25);
+      const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
+      const Kt = Math.pow(0.5, (40 - tempVal) / 10);
+      const Rt = rows[rows.length - 1].resistance;
+      const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
+      const r30 = (rows.find(function (r) { return r.time >= 30; }) || {}).resistance;
+      const r60 = (rows.find(function (r) { return r.time >= 60; }) || {}).resistance;
+      const r600 = (rows.find(function (r) { return r.time >= 600; }) || {}).resistance;
+      const pi = r600 && r60 ? r600 / r60 : null;
+      const dar = r60 && r30 ? r60 / r30 : null;
+      const svRows = tab === 'SV' ? splitSVData(rows).summaryRows : null;
+      const rating = rateInsulationTable({
+        tab: tab, pi: pi, dar: dar, svSummaryRows: svRows,
+        Rc40: Rc40, Rt: Rt, correctionOn: !!(record && record.correctInsulationTo40)
+      });
+      if (rating.text && rating.text !== '—') worst = worstBand(worst, rating.text);
+    });
+  });
+  return anyData ? (worst || 'Normal') : null;
 }
 
 // Helper to get nominal voltage from insulation test data
@@ -1081,43 +1184,22 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
   // Helper to get auto val in Excel
   const getExcelAutoVal = (key) => {
     if (key === 'condInsulation') {
-      const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
-      if (!hasIns) return '—';
-      let overallPass = 'Pass (Good)';
-      Object.keys(insData).forEach(tab => {
-        const tabData = insData[tab] || {};
-        const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
-        activeTables.forEach(tableId => {
-          const rows = tabData[tableId];
-          const runMeta = tabData[`${tableId}_meta`] || {};
-          const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record.temperature || 25);
-          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-          const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
-          const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-          const status = getPassStatus(record.correctInsulationTo40 ? Rc40 : Rt);
-          if (status.text.includes('Fail')) overallPass = 'Fail';
-          else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
-        });
-      });
-      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+      return computeOverallInsulationBand(insData, record) || '—';
     }
-    
+
     // Winding Imbalances at card group level for defaults
     const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
     const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
     const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
 
     if (key === 'condResistance') {
-      return statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorResImb !== null ? rateImbalance('acRes', statorResImb).text : '—';
     }
     if (key === 'condInductance') {
-      return statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorIndImb !== null ? rateImbalance('ind', statorIndImb).text : '—';
     }
     if (key === 'condImpedance') {
-      if (statorImpImb !== null) {
-        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
-      }
+      if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
       return hasImp ? 'Normal' : '—';
     }
@@ -1132,7 +1214,7 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
         });
       });
-      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return maxSwImb > 0 ? rateImbalance('acRes', maxSwImb).text : '—';
     }
     return '—';
   };
@@ -1145,21 +1227,23 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     row.getCell(1).border = borders;
     row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
     
-    // Style background color based on status choice
+    // Sarox docx band colours (Excellent, Good, Normal, Observe, Caution, Alarm)
     const valBgColors = {
-      'Good': 'FFD4EDDA',
-      'Normal':    'FFD1ECF1',
-      'Caution':   'FFFFF3CD',
-      'Alarm':     'FFF8D7DA',
-      'Observe':   'FFE2D9F3',
+      'Excellent': 'FFDCFCE7',
+      'Good':      'FFD1FAE5',
+      'Normal':    'FFDBEAFE',
+      'Observe':   'FFFEF3C7',
+      'Caution':   'FFFFEDD5',
+      'Alarm':     'FFFEE2E2',
       '—':         'FFF8FAFC'
     };
     const valTextColors = {
-      'Good': 'FF155724',
-      'Normal':    'FF0C5460',
-      'Caution':   'FF856404',
-      'Alarm':     'FF721C24',
-      'Observe':   'FF383D41',
+      'Excellent': 'FF166534',
+      'Good':      'FF15803D',
+      'Normal':    'FF1E40AF',
+      'Observe':   'FFB45309',
+      'Caution':   'FFC2410C',
+      'Alarm':     'FFB91C1C',
       '—':         'FF475569'
     };
     const bg = valBgColors[val] || valBgColors['—'];
@@ -2342,43 +2426,22 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
   // Calculate conditions
   const getAutoVal = (key) => {
     if (key === 'condInsulation') {
-      const hasIns = Object.values(insData).some(tabObj => tabObj && Object.values(tabObj).some(arr => arr && arr.length > 0));
-      if (!hasIns) return '—';
-      let overallPass = 'Pass (Good)';
-      Object.keys(insData).forEach(tab => {
-        const tabData = insData[tab] || {};
-        const activeTables = Object.keys(tabData).filter(tableId => tabData[tableId] && tabData[tableId].length > 0);
-        activeTables.forEach(tableId => {
-          const rows = tabData[tableId];
-          const runMeta = tabData[`${tableId}_meta`] || {};
-          const runTemp = (runMeta.temperature !== undefined && runMeta.temperature !== '') ? runMeta.temperature : (record.temperature || 25);
-          const tempVal = isNaN(parseFloat(runTemp)) ? 25 : parseFloat(runTemp);
-          const Kt = Math.pow(0.5, (40 - tempVal) / 10);
-          const Rt = rows.length > 0 ? rows[rows.length - 1].resistance : null;
-          const Rc40 = Rt !== null ? Math.round(Rt * Kt) : null;
-          const status = getPassStatus(record.correctInsulationTo40 ? Rc40 : Rt);
-          if (status.text.includes('Fail')) overallPass = 'Fail';
-          else if (status.text.includes('Standard') && overallPass !== 'Fail') overallPass = 'Pass (Standard)';
-        });
-      });
-      return overallPass.includes('Good') ? 'Good' : (overallPass.includes('Standard') ? 'Normal' : 'Alarm');
+      return computeOverallInsulationBand(insData, record) || '—';
     }
-    
+
     // Winding Imbalances at card group level for defaults
     const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
     const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
     const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
 
     if (key === 'condResistance') {
-      return statorResImb !== null ? (statorResImb < 2 ? 'Good' : (statorResImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorResImb !== null ? rateImbalance('acRes', statorResImb).text : '—';
     }
     if (key === 'condInductance') {
-      return statorIndImb !== null ? (statorIndImb < 2 ? 'Good' : (statorIndImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return statorIndImb !== null ? rateImbalance('ind', statorIndImb).text : '—';
     }
     if (key === 'condImpedance') {
-      if (statorImpImb !== null) {
-        return statorImpImb < 2 ? 'Good' : (statorImpImb < 5 ? 'Caution' : 'Alarm');
-      }
+      if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
       const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
       return hasImp ? 'Normal' : '—';
     }
@@ -2393,18 +2456,19 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
           if (imb !== null && imb > maxSwImb) maxSwImb = imb;
         });
       });
-      return maxSwImb > 0 ? (maxSwImb < 2 ? 'Good' : (maxSwImb < 5 ? 'Caution' : 'Alarm')) : '—';
+      return maxSwImb > 0 ? rateImbalance('acRes', maxSwImb).text : '—';
     }
     return '—';
   };
 
   const condKeys = ['condInsulation', 'condResistance', 'condInductance', 'condImpedance', 'condFrequency'];
   const condColors = {
-    'Good': { bg: '#D4EDDA', text: '#155724' },
-    'Normal':    { bg: '#D1ECF1', text: '#0C5460' },
-    'Caution':   { bg: '#FFF3CD', text: '#856404' },
-    'Alarm':     { bg: '#F8D7DA', text: '#721C24' },
-    'Observe':   { bg: '#E2D9F3', text: '#383D41' },
+    'Excellent': { bg: RATING_STYLES.Excellent.bg, text: RATING_STYLES.Excellent.color },
+    'Good':      { bg: RATING_STYLES.Good.bg,      text: RATING_STYLES.Good.color },
+    'Normal':    { bg: RATING_STYLES.Normal.bg,    text: RATING_STYLES.Normal.color },
+    'Observe':   { bg: RATING_STYLES.Observe.bg,   text: RATING_STYLES.Observe.color },
+    'Caution':   { bg: RATING_STYLES.Caution.bg,   text: RATING_STYLES.Caution.color },
+    'Alarm':     { bg: RATING_STYLES.Alarm.bg,     text: RATING_STYLES.Alarm.color },
     '—':         { bg: '#F8FAFC', text: '#475569' }
   };
 
@@ -3027,22 +3091,12 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
   };
 
   drawWindingWGroup('Stator Winding Readings', 'stator');
-  if (record.correctWindingTo20) {
-    doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
-      .text('* Note: Stator winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula.', 40, doc.y + 4, { width: W });
-    doc.y += 10;
-  }
 
   // Page 3: Rotor Winding Readings (Multimeter R/L/C) — only when user opts in
   if (includeRotor) {
     doc.addPage();
     drawHeader('ROTOR WINDING TEST');
     drawWindingWGroup('Rotor Winding Readings', 'rotor');
-    if (record.correctWindingTo20) {
-      doc.fillColor(GRAY).fontSize(8).font('Helvetica-Oblique')
-        .text('* Note: Rotor winding resistance measurements shown above are corrected/baselined to 20°C using standard copper formula.', 40, doc.y + 4, { width: W });
-      doc.y += 10;
-    }
   }
 
   // --- Winding Frequency Sweep rendering in PDF (charts only, two per row) ---
@@ -3102,25 +3156,118 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     doc.y = y0 + blockH + 6;
   };
 
+  // Build the impedance-polar dataset for a group. Match the app's rule: include
+  // any phase that has a valid Z (magnitude); if the angle is missing, default
+  // it to 0° so the vector still renders (see ReportScreen.jsx polarData build).
+  const buildImpPolarData = (group) => {
+    const phases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+    const out = [];
+    phases.forEach(p => {
+      const zRaw = mulData[`${group}_imp_${p}_z`]?.value;
+      const degRaw = mulData[`${group}_imp_${p}_deg`]?.value;
+      const z = parseFloat(zRaw);
+      if (zRaw === undefined || zRaw === null || !isFinite(z)) return;
+      const degNum = parseFloat(degRaw);
+      const deg = (degRaw !== undefined && degRaw !== null && isFinite(degNum)) ? degNum : 0;
+      out.push({ phase: p, z, deg });
+    });
+    return out;
+  };
+
   const hasStatorSweep    = hasSweepDataForGroup(mulData, 'stator', 'ind');
   const hasStatorResSweep = hasSweepDataForGroup(mulData, 'stator', 'res');
   const hasRotorSweep     = hasSweepDataForGroup(mulData, 'rotor',  'ind');
   const hasRotorResSweep  = hasSweepDataForGroup(mulData, 'rotor',  'res');
+  const statorPolarData = buildImpPolarData('stator');
+  const rotorPolarData  = buildImpPolarData('rotor');
+  const hasStatorPolar  = statorPolarData.length > 0;
+  const hasRotorPolar   = rotorPolarData.length > 0;
 
-  if (hasStatorSweep || hasRotorSweep || hasStatorResSweep || hasRotorResSweep) {
+  const PHASE_COLORS = {
+    '1-2': '#E11D48', '1-3': '#10B981', '2-3': '#D97706',
+    '1-N': '#7C3AED', '2-N': '#06B6D4', '3-N': '#EC4899',
+  };
+
+  // Section heading — subtle bar + title, matches the app's section styling.
+  const drawSectionTitle = (title) => {
+    const y = doc.y;
+    doc.rect(40, y, W, 18).fill('#EFF6FF');
+    doc.fillColor(BLUE).fontSize(10).font('Helvetica-Bold').text(title, 48, y + 4, { width: W - 16 });
+    doc.y = y + 22;
+  };
+
+  // Draws the impedance polar plot inside a bordered card, centered, with a
+  // phase-color legend row underneath.
+  const drawPolarSection = (cardTitle, impData) => {
+    const cardW = W;
+    const size = 260;
+    const legendH = 14;
+    const padTop = 24;   // room for card title
+    const padBot = 10;
+    const cardH = padTop + size + legendH + padBot;
+
+    if (doc.y + cardH > doc.page.height - 40) {
+      doc.addPage();
+      drawHeader('WINDING FREQUENCY RESPONSE');
+    }
+
+    const cardTop = doc.y;
+    doc.rect(40, cardTop, cardW, cardH).fill('#F8FAFC');
+    doc.strokeColor('#E2E8F0').lineWidth(0.75).rect(40, cardTop, cardW, cardH).stroke();
+
+    doc.fillColor(BLUE).fontSize(10).font('Helvetica-Bold')
+      .text(cardTitle, 40, cardTop + 6, { width: cardW, align: 'center' });
+
+    const chartX = 40 + (cardW - size) / 2;
+    const chartY = cardTop + padTop;
+    drawPDFPolarGraph(doc, 'Impedance Polar Plot', chartX, chartY, size, impData);
+
+    // Legend row centered under the plot
+    const phases = impData.map(d => d.phase);
+    const legendItemW = 60;
+    const legendW = phases.length * legendItemW;
+    let lx = 40 + (cardW - legendW) / 2;
+    const ly = chartY + size + 2;
+    phases.forEach(p => {
+      const color = PHASE_COLORS[p] || '#64748B';
+      doc.strokeColor(color).lineWidth(2).moveTo(lx, ly + 5).lineTo(lx + 14, ly + 5).stroke();
+      doc.fillColor('#334155').fontSize(8).font('Helvetica-Bold').text(p, lx + 18, ly + 2);
+      lx += legendItemW;
+    });
+
+    doc.y = cardTop + cardH + 8;
+  };
+
+  if (hasStatorSweep || hasRotorSweep || hasStatorResSweep || hasRotorResSweep || hasStatorPolar || hasRotorPolar) {
     doc.addPage();
     drawHeader('WINDING FREQUENCY RESPONSE');
 
-    drawSweepRow(
-      hasStatorSweep    ? { title: 'Stator Inductance Sweep (mH)',            group: 'stator', type: 'ind' } : null,
-      hasStatorResSweep ? { title: 'Stator AC Winding Resistance Sweep (Ω)', group: 'stator', type: 'res' } : null
-    );
+    // Section 1 — Impedance Polar Plots (rendered first, matches app layout)
+    if (hasStatorPolar || (includeRotor && hasRotorPolar)) {
+      drawSectionTitle('Impedance Polar Plots');
+      if (hasStatorPolar) {
+        drawPolarSection('Stator Impedance Polar Plot', statorPolarData);
+      }
+      if (includeRotor && hasRotorPolar) {
+        drawPolarSection('Rotor Impedance Polar Plot', rotorPolarData);
+      }
+    }
 
-    if (includeRotor && (hasRotorSweep || hasRotorResSweep)) {
+    // Section 2 — Winding Frequency Response (Inductance + AC Resistance sweeps)
+    if (hasStatorSweep || hasStatorResSweep || (includeRotor && (hasRotorSweep || hasRotorResSweep))) {
+      drawSectionTitle('Winding Frequency Response');
+
       drawSweepRow(
-        hasRotorSweep    ? { title: 'Rotor Inductance Sweep (mH)',            group: 'rotor', type: 'ind' } : null,
-        hasRotorResSweep ? { title: 'Rotor AC Winding Resistance Sweep (Ω)', group: 'rotor', type: 'res' } : null
+        hasStatorSweep    ? { title: 'Stator Inductance Sweep (mH)',            group: 'stator', type: 'ind' } : null,
+        hasStatorResSweep ? { title: 'Stator AC Winding Resistance Sweep (Ω)', group: 'stator', type: 'res' } : null
       );
+
+      if (includeRotor && (hasRotorSweep || hasRotorResSweep)) {
+        drawSweepRow(
+          hasRotorSweep    ? { title: 'Rotor Inductance Sweep (mH)',            group: 'rotor', type: 'ind' } : null,
+          hasRotorResSweep ? { title: 'Rotor AC Winding Resistance Sweep (Ω)', group: 'rotor', type: 'res' } : null
+        );
+      }
     }
   }
 
@@ -3161,45 +3308,58 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       const rawRtStr = Rt !== null ? formatResistancePDF(Rt) : '—';
       const corrR40Str = Rc40 !== null ? formatResistancePDF(Rc40) : '—';
 
-      // Summary Card dimensions — per-table Pass rating badge removed on request.
+      // Summary Card — cells laid out on a single row; anchor everything to cardTop
+      // so trailing text() calls can't drift doc.y and push the RATING pill outside.
+      const cardTop = doc.y;
       const cardH = 34;
-      doc.rect(40, doc.y, W, cardH).fill('#F8FAFC');
+      doc.rect(40, cardTop, W, cardH).fill('#F8FAFC');
       doc.strokeColor('#CBD5E1').lineWidth(0.5);
-      doc.rect(40, doc.y, W, cardH).stroke();
+      doc.rect(40, cardTop, W, cardH).stroke();
 
-      const boxY = doc.y + 4;
+      const boxY = cardTop + 4;
+      const CELL_W = 60;
       // PI hidden on DAR mode (needs 10 min); DD only rendered on PI Test tables.
       if (tab !== 'DAR') {
-        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('PI', 48, boxY).fontSize(9).text(pi, 48, boxY + 7);
+        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('PI', 48, boxY, { width: CELL_W });
+        doc.fontSize(9).text(pi, 48, boxY + 8, { width: CELL_W });
       }
-      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DAR', 88, boxY).fontSize(9).text(dar, 88, boxY + 7);
+      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DAR', 88, boxY, { width: CELL_W });
+      doc.fontSize(9).text(dar, 88, boxY + 8, { width: CELL_W });
       if (tab === 'PI') {
-        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DD', 128, boxY).fontSize(9).text(ddVal, 128, boxY + 7);
+        doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('DD', 128, boxY, { width: CELL_W });
+        doc.fontSize(9).text(ddVal, 128, boxY + 8, { width: CELL_W });
       }
 
       // Temp / Raw Rt
-      doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('TEMP', 168, boxY).fontSize(9).text(`${tempVal}°C`, 168, boxY + 7);
-      doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('RAW Rt', 218, boxY).fontSize(9).text(rawRtStr, 218, boxY + 7);
+      doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('TEMP', 168, boxY, { width: CELL_W });
+      doc.fontSize(9).text(`${tempVal}°C`, 168, boxY + 8, { width: CELL_W });
+      doc.fillColor(DARK_GRAY).fontSize(6).font('Helvetica-Bold').text('RAW Rt', 218, boxY, { width: 70 });
+      doc.fontSize(9).text(rawRtStr, 218, boxY + 8, { width: 70 });
 
       // Corrected R40
-      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('CORRECTED R40', 308, boxY).fontSize(9).text(corrR40Str, 308, boxY + 7);
+      doc.fillColor(BLUE).fontSize(6).font('Helvetica-Bold').text('CORRECTED R40', 293, boxY, { width: 90 });
+      doc.fontSize(9).text(corrR40Str, 293, boxY + 8, { width: 90 });
 
-      // Rating pill — SV uses chart linearity; others use IEEE 43 Rc40 threshold.
-      const ratingBasis = record.correctInsulationTo40 ? Rc40 : Rt;
-      const ratingObj = tab === 'SV'
-        ? getSVRating(splitSVData(rows).summaryRows)
-        : getPassStatus(ratingBasis);
-      const pillX = 400;
-      const pillY = doc.y + 2;
-      const pillW = 130;
-      const pillH = 20;
+      // Rating pill per Sarox docx: PI ratio, DAR ratio, SV settlement, RAMP → Rc40 fallback.
+      const ratingObj = rateInsulationTable({
+        tab: tab,
+        pi: pi === '—' ? null : Number(pi),
+        dar: dar === '—' ? null : Number(dar),
+        svSummaryRows: tab === 'SV' ? splitSVData(rows).summaryRows : null,
+        Rc40: Rc40, Rt: Rt,
+        correctionOn: !!record.correctInsulationTo40
+      });
+      const pillW = 150;
+      const pillH = cardH - 8;
+      const pillX = 40 + W - pillW - 4;
+      const pillY = cardTop + 4;
       doc.save();
       doc.roundedRect(pillX, pillY, pillW, pillH, 4).fill(ratingObj.color);
-      doc.fillColor('#FFFFFF').fontSize(6).font('Helvetica-Bold').text('RATING', pillX, pillY + 3, { width: pillW, align: 'center' });
-      doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold').text(ratingObj.text, pillX, pillY + 10, { width: pillW, align: 'center' });
+      doc.fillColor('#FFFFFF').fontSize(6).font('Helvetica-Bold').text('RATING', pillX, pillY + 4, { width: pillW, align: 'center' });
+      doc.fillColor('#FFFFFF').fontSize(10).font('Helvetica-Bold').text(ratingObj.text, pillX, pillY + 12, { width: pillW, align: 'center' });
       doc.restore();
 
-      doc.y += cardH + 12;
+      doc.y = cardTop + cardH + 12;
 
       // Define side-by-side columns
       const leftW = W * 0.48;
