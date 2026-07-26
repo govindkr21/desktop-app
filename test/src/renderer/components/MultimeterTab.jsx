@@ -199,6 +199,76 @@ function MeasGroup({
           )}
         </div>
       </div>
+      {/* Columns Header for Inductance Sweep */}
+      {isInd && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
+          {L_FREQS.map(f => {
+            const isCurrentFreq = currentFreq === f && isActive;
+            return (
+              <span
+                key={f}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFreqTabClick && onFreqTabClick(f);
+                }}
+                style={{
+                  flex: 1,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: isCurrentFreq ? '#1e40af' : '#64748b',
+                  background: isCurrentFreq ? '#dbeafe' : '#f1f5f9',
+                  border: `1px solid ${isCurrentFreq ? '#3b82f6' : '#cbd5e1'}`,
+                  borderRadius: 4,
+                  padding: '2px 0',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                title={`Click to configure multimeter frequency to ${f}`}
+              >
+                {f}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Columns Header for AC Resistance Sweep (R mode) */}
+      {isResAcSweep && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
+          {R_FREQS.map(f => {
+            const isCurrentFreq = currentFreq === f && isActive;
+            return (
+              <span
+                key={f}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFreqTabClick && onFreqTabClick(f);
+                }}
+                style={{
+                  flex: 1,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: isCurrentFreq ? '#7c3aed' : '#64748b',
+                  background: isCurrentFreq ? '#ede9fe' : '#f1f5f9',
+                  border: `1px solid ${isCurrentFreq ? '#a78bfa' : '#cbd5e1'}`,
+                  borderRadius: 4,
+                  padding: '2px 0',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                title={`Click to configure multimeter frequency to ${f}`}
+              >
+                {f}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* Columns Header for Impedance Z Sweep */}
       {isImp && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
