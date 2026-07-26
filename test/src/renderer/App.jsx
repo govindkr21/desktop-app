@@ -275,10 +275,6 @@ export default function App() {
               }}></span>
               <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 600 }}>Multimeter: {multimeterStatus}</span>
             </div>
-
-
-
-            {/* Connection setup trigger button */}
             <button
               onClick={() => setShowConnSetup(true)}
               style={{

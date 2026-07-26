@@ -25,6 +25,7 @@ const IMP_KEYS = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
 
 const L_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
 const R_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+const Z_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
 
 // ── Styles shared across the component ──────────────────
 const S = {
@@ -196,113 +197,40 @@ function MeasGroup({
               </select>
             </div>
           )}
-          {isImp && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontSize: 9, color: '#64748b', fontWeight: 600 }}>Freq:</span>
-              <select
-                value={groupFreq || '1kHz'}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (onHeaderFreqChange) onHeaderFreqChange(groupFreqKey, v);
-                  else handleFreqChange(groupFreqKey, v);
-                }}
-                style={{
-                  border: '1px solid #cbd5e1',
-                  borderRadius: 4,
-                  padding: '2px 4px',
-                  fontSize: 10,
-                  color: '#1e293b',
-                  background: '#fff',
-                  outline: 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                <option value="100Hz">100Hz</option>
-                <option value="120Hz">120Hz</option>
-                <option value="1kHz">1kHz</option>
-                <option value="10kHz">10kHz</option>
-                <option value="100kHz">100kHz</option>
-              </select>
-            </div>
-          )}
         </div>
       </div>
-
-      {/* Columns Header for Inductance Sweep */}
-      {isInd && (
-        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
-          {L_FREQS.map(f => {
-            const isCurrentFreq = currentFreq === f && isActive;
-            return (
-              <span
-                key={f}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFreqTabClick && onFreqTabClick(f);
-                }}
-                style={{
-                  flex: 1,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  color: isCurrentFreq ? '#1e40af' : '#64748b',
-                  background: isCurrentFreq ? '#dbeafe' : '#f1f5f9',
-                  border: `1px solid ${isCurrentFreq ? '#3b82f6' : '#cbd5e1'}`,
-                  borderRadius: 4,
-                  padding: '2px 0',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  transition: 'all 0.15s ease-in-out',
-                }}
-                title={`Click to configure multimeter frequency to ${f}`}
-              >
-                {f}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Columns Header for AC Resistance Sweep (R mode) */}
-      {isResAcSweep && (
-        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
-          {R_FREQS.map(f => {
-            const isCurrentFreq = currentFreq === f && isActive;
-            return (
-              <span
-                key={f}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFreqTabClick && onFreqTabClick(f);
-                }}
-                style={{
-                  flex: 1,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  color: isCurrentFreq ? '#7c3aed' : '#64748b',
-                  background: isCurrentFreq ? '#ede9fe' : '#f1f5f9',
-                  border: `1px solid ${isCurrentFreq ? '#a78bfa' : '#cbd5e1'}`,
-                  borderRadius: 4,
-                  padding: '2px 0',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  transition: 'all 0.15s ease-in-out',
-                }}
-                title={`Click to configure multimeter frequency to ${f}`}
-              >
-                {f}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Columns Header for Impedance Z + Deg */}
+      {/* Columns Header for Impedance Z Sweep */}
       {isImp && (
-        <div style={{ display: 'flex', gap: 4, marginBottom: 4, paddingRight: 26, paddingLeft: 82 }}>
-          <span style={{ flex: 1, fontSize: 8, fontWeight: 700, color: '#64748b', textAlign: 'center' }}>Impedance Z (Ω)</span>
-          <span style={{ flex: 1, fontSize: 8, fontWeight: 700, color: '#64748b', textAlign: 'center' }}>Degree (°)</span>
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6, paddingRight: 26, paddingLeft: 82 }}>
+          {Z_FREQS.map(f => {
+            const isCurrentFreq = currentFreq === f && isActive;
+            return (
+              <span
+                key={f}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFreqTabClick && onFreqTabClick(f);
+                }}
+                style={{
+                  flex: 1,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: isCurrentFreq ? '#0284c7' : '#64748b',
+                  background: isCurrentFreq ? '#e0f2fe' : '#f1f5f9',
+                  border: `1px solid ${isCurrentFreq ? '#38bdf8' : '#cbd5e1'}`,
+                  borderRadius: 4,
+                  padding: '2px 0',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                title={`Click to configure multimeter frequency to ${f}`}
+              >
+                {f}
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -463,48 +391,92 @@ function MeasGroup({
               </>
             ) : isImp ? (
               <>
-                <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-                  <input
-                    type="text"
-                    value={displayZ}
-                    onFocus={() => handleFocus(`${fKey}_z`, zVal)}
-                    onChange={(e) => handleTextChange(`${fKey}_z`, e.target.value)}
-                    onBlur={() => handleBlur(`${fKey}_z`)}
-                    style={S.captureInput(zVal !== undefined)}
-                    placeholder="Z (Ω)"
-                    title="Enter manual reading for Impedance (Z)"
-                  />
-                  <input
-                    type="text"
-                    value={displayDeg}
-                    onFocus={() => handleFocus(`${fKey}_deg`, degVal)}
-                    onChange={(e) => handleTextChange(`${fKey}_deg`, e.target.value)}
-                    onBlur={() => handleBlur(`${fKey}_deg`)}
-                    style={S.captureInput(degVal !== undefined)}
-                    placeholder="Degree (°)"
-                    title="Enter manual reading for Phase Degree"
-                  />
-                </div>
-                
+                {Z_FREQS.map(f => {
+                  const sweepZKey = `${fKey}_${f}_z`;
+                  const sweepDegKey = `${fKey}_${f}_deg`;
+
+                  const zVal = captured[sweepZKey] ?? (currentFreq === f ? captured[`${fKey}_z`] : undefined);
+                  const degVal = captured[sweepDegKey] ?? (currentFreq === f ? captured[`${fKey}_deg`] : undefined);
+
+                  const isFocusedZ = focusedField === sweepZKey;
+                  const isFocusedDeg = focusedField === sweepDegKey;
+
+                  const hasZValue = zVal !== undefined && zVal !== null;
+                  const hasDegValue = degVal !== undefined && degVal !== null;
+
+                  const displayZ = isFocusedZ
+                    ? (editValues[sweepZKey] ?? '')
+                    : (isOverload(zVal, 'Z') ? 'O.L' : (hasZValue ? String(zVal) : ''));
+
+                  const displayDeg = isFocusedDeg
+                    ? (editValues[sweepDegKey] ?? '')
+                    : (hasDegValue ? String(degVal) : '');
+
+                  const isCurrentSweep = sweepingField === fKey && activeSweepFreq === f;
+
+                  return (
+                    <div key={f} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <input
+                        type="text"
+                        value={displayZ}
+                        onFocus={() => handleFocus(sweepZKey, zVal)}
+                        onChange={(e) => handleTextChange(sweepZKey, e.target.value)}
+                        onBlur={() => handleBlur(sweepZKey)}
+                        style={{
+                          ...S.captureInput(hasZValue),
+                          borderColor: isCurrentSweep ? '#0284c7' : undefined,
+                          boxShadow: isCurrentSweep ? '0 0 0 2px #bae6fd' : undefined,
+                          outline: 'none',
+                          textAlign: 'center',
+                          fontSize: 9,
+                          padding: '1px 2px',
+                        }}
+                        placeholder="Z (Ω)"
+                        title={`Impedance Z at ${f}`}
+                      />
+                      <input
+                        type="text"
+                        value={displayDeg}
+                        onFocus={() => handleFocus(sweepDegKey, degVal)}
+                        onChange={(e) => handleTextChange(sweepDegKey, e.target.value)}
+                        onBlur={() => handleBlur(sweepDegKey)}
+                        style={{
+                          ...S.captureInput(hasDegValue),
+                          borderColor: isCurrentSweep ? '#0284c7' : undefined,
+                          boxShadow: isCurrentSweep ? '0 0 0 2px #bae6fd' : undefined,
+                          outline: 'none',
+                          textAlign: 'center',
+                          fontSize: 8.5,
+                          padding: '1px 2px',
+                          color: '#0369a1',
+                          background: hasDegValue ? '#f0f9ff' : '#f8fafc',
+                        }}
+                        placeholder="Deg (°)"
+                        title={`Phase Angle Degree (°) at ${f}`}
+                      />
+                    </div>
+                  );
+                })}
                 <button
-                  onClick={() => onCapture(fKey)}
-                  title="Capture live Z + Degree reading"
+                  onClick={() => onSweep && onSweep(fKey, 'Z')}
+                  disabled={sweepingField !== null}
+                  title="Sweep all frequencies (Z + Degree) and capture values"
                   style={{
-                    background: '#eff6ff',
-                    border: '1px solid #bfdbfe',
+                    background: sweepingField === fKey ? '#e0f2fe' : '#eff6ff',
+                    border: `1px solid ${sweepingField === fKey ? '#38bdf8' : '#bfdbfe'}`,
                     borderRadius: 4,
                     width: 22,
-                    height: 20,
+                    height: 42,
                     fontSize: 10,
-                    cursor: 'pointer',
-                    color: '#1e40af',
+                    cursor: sweepingField !== null ? 'not-allowed' : 'pointer',
+                    color: '#0284c7',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     flexShrink: 0
                   }}
                 >
-                  ⚡
+                  {sweepingField === fKey ? '⏳' : '⚡'}
                 </button>
               </>
             ) : (
@@ -753,30 +725,60 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       if (demoMode) {
         // In Demo Mode: wait 300ms, then capture simulated value
         await new Promise(resolve => setTimeout(resolve, 300));
-        let simVal;
         if (sweepMode === 'R') {
           // AC resistance rises with frequency due to skin effect
           const base = f === '100Hz' ? 12.41 : f === '120Hz' ? 12.43 : f === '1kHz' ? 12.48 : f === '10kHz' ? 12.89 : 14.21;
           const noise = (Math.random() - 0.5) * base * 0.01;
-          simVal = parseFloat((base + noise).toFixed(4));
+          const simVal = parseFloat((base + noise).toFixed(4));
+          setCaptured(prev => ({ ...prev, [phaseSweepKey]: simVal }));
+          if (record) {
+            await api.saveMultimeterField(record.id, phaseSweepKey, {
+              value: simVal,
+              temperature: parseFloat(temperature) || 0
+            });
+          }
+        } else if (sweepMode === 'Z') {
+          const sweepZKey = `${fKey}_${f}_z`;
+          const sweepDegKey = `${fKey}_${f}_deg`;
+          const baseZ = f === '100Hz' ? 15.12 : f === '120Hz' ? 15.25 : f === '1kHz' ? 15.80 : f === '10kHz' ? 18.40 : 26.10;
+          const noiseZ = (Math.random() - 0.5) * baseZ * 0.01;
+          const simZ = parseFloat((baseZ + noiseZ).toFixed(3));
+
+          const baseDeg = f === '100Hz' ? 32.1 : f === '120Hz' ? 34.5 : f === '1kHz' ? 48.2 : f === '10kHz' ? 68.5 : 78.2;
+          const noiseDeg = (Math.random() - 0.5) * 1.5;
+          const simDeg = parseFloat((baseDeg + noiseDeg).toFixed(2));
+
+          setCaptured(prev => ({
+            ...prev,
+            [sweepZKey]: simZ,
+            [sweepDegKey]: simDeg,
+            [phaseSweepKey]: simZ,
+            [`${fKey}_z`]: simZ,
+            [`${fKey}_deg`]: simDeg
+          }));
+
+          if (record) {
+            await api.saveMultimeterField(record.id, sweepZKey, { value: simZ, temperature: parseFloat(temperature) || 0, frequency: f });
+            await api.saveMultimeterField(record.id, sweepDegKey, { value: simDeg, temperature: parseFloat(temperature) || 0, frequency: f });
+            await api.saveMultimeterField(record.id, phaseSweepKey, { value: simZ, temperature: parseFloat(temperature) || 0, frequency: f });
+          }
         } else {
           const base = f === '100Hz' ? 145.2 : f === '120Hz' ? 144.8 : f === '1kHz' ? 142.1 : f === '10kHz' ? 138.5 : 132.0;
           const noise = (Math.random() - 0.5) * base * 0.02;
-          simVal = parseFloat((base + noise).toFixed(3));
-        }
-
-        setCaptured(prev => ({ ...prev, [phaseSweepKey]: simVal }));
-        if (record) {
-          await api.saveMultimeterField(record.id, phaseSweepKey, {
-            value: simVal,
-            temperature: parseFloat(temperature) || 0
-          });
+          const simVal = parseFloat((base + noise).toFixed(3));
+          setCaptured(prev => ({ ...prev, [phaseSweepKey]: simVal }));
+          if (record) {
+            await api.saveMultimeterField(record.id, phaseSweepKey, {
+              value: simVal,
+              temperature: parseFloat(temperature) || 0
+            });
+          }
         }
       } else {
         // In Real Device Mode — robust 3-step capture:
         try {
           // ── Step 1: Send mode + frequency command to the LCR meter ──
-          const sweepSecondary = secondary;
+          const sweepSecondary = sweepMode === 'Z' ? 'THETA' : secondary;
           await api.sendMultimeterCommand(sweepMode, f, sweepSecondary, equivalent);
         } catch (err) {
           console.error(`[Sweep] Failed to send command for ${f}:`, err);
@@ -799,13 +801,35 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
             await new Promise(resolve => setTimeout(resolve, 50));
           }
 
-          const val = liveValueRef.current;
-          setCaptured(prev => ({ ...prev, [phaseSweepKey]: val }));
-          if (record) {
-            await api.saveMultimeterField(record.id, phaseSweepKey, {
-              value: val,
-              temperature: parseFloat(temperature) || 0
-            });
+          if (sweepMode === 'Z') {
+            const zVal = liveValueRef.current;
+            const degVal = liveSecondaryValueRef.current;
+            const sweepZKey = `${fKey}_${f}_z`;
+            const sweepDegKey = `${fKey}_${f}_deg`;
+
+            setCaptured(prev => ({
+              ...prev,
+              [sweepZKey]: zVal,
+              [sweepDegKey]: degVal,
+              [phaseSweepKey]: zVal,
+              [`${fKey}_z`]: zVal,
+              [`${fKey}_deg`]: degVal
+            }));
+
+            if (record) {
+              await api.saveMultimeterField(record.id, sweepZKey, { value: zVal, temperature: parseFloat(temperature) || 0, frequency: f });
+              await api.saveMultimeterField(record.id, sweepDegKey, { value: degVal, temperature: parseFloat(temperature) || 0, frequency: f });
+              await api.saveMultimeterField(record.id, phaseSweepKey, { value: zVal, temperature: parseFloat(temperature) || 0, frequency: f });
+            }
+          } else {
+            const val = liveValueRef.current;
+            setCaptured(prev => ({ ...prev, [phaseSweepKey]: val }));
+            if (record) {
+              await api.saveMultimeterField(record.id, phaseSweepKey, {
+                value: val,
+                temperature: parseFloat(temperature) || 0
+              });
+            }
           }
         } catch (err) {
           console.error(`[Sweep] Error capturing value at ${f}:`, err);
@@ -841,6 +865,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   const lastValueTime = useRef(Date.now());
   // Mutable refs for sweep: avoids React closure stale-value bug
   const liveValueRef = useRef(0);
+  const liveSecondaryValueRef = useRef(0);
   const packetCountRef = useRef(0);
 
   const multimeterOnline = multimeterStatus === 'connected';
@@ -893,10 +918,12 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       liveRef.current = setInterval(() => {
         const noise = (Math.random() - 0.5) * base * 0.05;
         const val = parseFloat((base + noise).toFixed(3));
+        const secVal = parseFloat((Math.random() * 0.1).toFixed(4));
         setLiveValue(val);
         liveValueRef.current = val;  // keep mutable ref in sync
+        setLiveSecondaryValue(secVal);
+        liveSecondaryValueRef.current = secVal;
         packetCountRef.current += 1;
-        setLiveSecondaryValue(parseFloat((Math.random() * 0.1).toFixed(4)));
       }, 400);
     } else {
       if (multimeterOnline) {
@@ -913,6 +940,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
           setLiveValue(v.primary);
           setLiveSecondaryValue(v.secondary);
           liveValueRef.current = v.primary;  // keep mutable ref in sync
+          liveSecondaryValueRef.current = v.secondary;
           packetCountRef.current += 1;        // increment on every new IPC packet
         });
       }
@@ -1045,52 +1073,65 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     }
   };
 
-  const handleTextChange = (fieldKey, text) => {
+  const handleTextChange = async (fieldKey, text) => {
     setEditValues(prev => ({ ...prev, [fieldKey]: text }));
+
+    if (text.trim() === '') {
+      setCaptured(prev => {
+        const copy = { ...prev };
+        delete copy[fieldKey];
+        return copy;
+      });
+      if (record) {
+        await api.saveMultimeterField(record.id, fieldKey, {
+          value: null,
+          temperature: parseFloat(temperature) || 0
+        });
+      }
+    } else {
+      const parsed = parseFloat(text);
+      if (!isNaN(parsed)) {
+        setCaptured(prev => ({ ...prev, [fieldKey]: parsed }));
+        if (record) {
+          await api.saveMultimeterField(record.id, fieldKey, {
+            value: parsed,
+            temperature: parseFloat(temperature) || 0
+          });
+        }
+      }
+    }
   };
 
   const handleBlur = async (fieldKey) => {
     setFocusedField(null);
     const rawStr = editValues[fieldKey];
-    if (rawStr === undefined) return;
-
-    let finalVal = undefined;
-    if (rawStr.trim() !== '') {
-      const parsed = parseFloat(rawStr);
-      if (!isNaN(parsed)) {
-        finalVal = parsed;
-      }
-    }
-
-    const currentVal = captured[fieldKey];
-    if (finalVal !== currentVal) {
-      if (!confirmReTest()) {
-        setEditValues(prev => {
+    if (rawStr !== undefined) {
+      if (rawStr.trim() !== '') {
+        const parsed = parseFloat(rawStr);
+        if (!isNaN(parsed)) {
+          setCaptured(prev => ({ ...prev, [fieldKey]: parsed }));
+          if (record) {
+            await api.saveMultimeterField(record.id, fieldKey, {
+              value: parsed,
+              temperature: parseFloat(temperature) || 0
+            });
+          }
+        }
+      } else {
+        setCaptured(prev => {
           const copy = { ...prev };
           delete copy[fieldKey];
           return copy;
         });
-        return;
+        if (record) {
+          await api.saveMultimeterField(record.id, fieldKey, {
+            value: null,
+            temperature: parseFloat(temperature) || 0
+          });
+        }
       }
     }
 
-    setCaptured(prev => {
-      const copy = { ...prev };
-      if (finalVal === undefined) {
-        delete copy[fieldKey];
-      } else {
-        copy[fieldKey] = finalVal;
-      }
-      return copy;
-    });
-
-    if (record) {
-      await api.saveMultimeterField(record.id, fieldKey, {
-        value: finalVal === undefined ? null : finalVal,
-        temperature: parseFloat(temperature) || 0
-      });
-    }
-    
     setEditValues(prev => {
       const copy = { ...prev };
       delete copy[fieldKey];
@@ -1211,15 +1252,24 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
   }
 
   const currentLImbFreq = (L_FREQS.includes(freq) ? freq : '100Hz');
+  const currentZImbFreq = Z_FREQS.includes(freq) ? freq : '100Hz';
   const statorResImb = calculateImbalance(captured['stator_res_1-2'], captured['stator_res_1-3'], captured['stator_res_2-3']);
   const statorIndImb = calculateImbalance(captured[`stator_ind_1-2_${currentLImbFreq}`], captured[`stator_ind_1-3_${currentLImbFreq}`], captured[`stator_ind_2-3_${currentLImbFreq}`]);
   const statorCapImb = calculateImbalance(captured['stator_cap_1-2'], captured['stator_cap_1-3'], captured['stator_cap_2-3']) || calculateImbalance(captured['stator_cap_1-GND'], captured['stator_cap_2-GND'], captured['stator_cap_3-GND']);
-  const statorImpImb = calculateImbalance(captured['stator_imp_1-2_z'], captured['stator_imp_1-3_z'], captured['stator_imp_2-3_z']);
+  const statorImpImb = calculateImbalance(
+    captured[`stator_imp_1-2_${currentZImbFreq}_z`] ?? captured['stator_imp_1-2_z'],
+    captured[`stator_imp_1-3_${currentZImbFreq}_z`] ?? captured['stator_imp_1-3_z'],
+    captured[`stator_imp_2-3_${currentZImbFreq}_z`] ?? captured['stator_imp_2-3_z']
+  );
 
   const rotorResImb = calculateImbalance(captured['rotor_res_1-2'], captured['rotor_res_1-3'], captured['rotor_res_2-3']);
   const rotorIndImb = calculateImbalance(captured[`rotor_ind_1-2_${currentLImbFreq}`], captured[`rotor_ind_1-3_${currentLImbFreq}`], captured[`rotor_ind_2-3_${currentLImbFreq}`]);
   const rotorCapImb = calculateImbalance(captured['rotor_cap_1-2'], captured['rotor_cap_1-3'], captured['rotor_cap_2-3']) || calculateImbalance(captured['rotor_cap_1-GND'], captured['rotor_cap_2-GND'], captured['rotor_cap_3-GND']);
-  const rotorImpImb = calculateImbalance(captured['rotor_imp_1-2_z'], captured['rotor_imp_1-3_z'], captured['rotor_imp_2-3_z']);
+  const rotorImpImb = calculateImbalance(
+    captured[`rotor_imp_1-2_${currentZImbFreq}_z`] ?? captured['rotor_imp_1-2_z'],
+    captured[`rotor_imp_1-3_${currentZImbFreq}_z`] ?? captured['rotor_imp_1-3_z'],
+    captured[`rotor_imp_2-3_${currentZImbFreq}_z`] ?? captured['rotor_imp_2-3_z']
+  );
 
   function renderImbalanceChip(imb, label) {
     const isPending = imb === null;

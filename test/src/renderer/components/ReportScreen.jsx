@@ -2038,10 +2038,19 @@ export default function ReportScreen({ record, onChange }) {
                   {/* Impedance + Polar + Capacitance combined row (moved above rotor winding) */}
                   {(() => {
                     const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-                    const hasGroupImp = impPhases.some(phase =>
-                      mulData[`${group}_imp_${phase}_z`]?.value !== undefined ||
-                      mulData[`${group}_imp_${phase}_deg`]?.value !== undefined
-                    );
+                    const Z_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+                    const getImpCell = (group, phase, type) => {
+                      for (const f of Z_FREQS) {
+                        const cell = mulData[`${group}_imp_${phase}_${f}_${type}`];
+                        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+                      }
+                      return mulData[`${group}_imp_${phase}_${type}`];
+                    };
+
+                    const hasGroupImp = impPhases.some(phase => {
+                      if (mulData[`${group}_imp_${phase}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_deg`]?.value !== undefined) return true;
+                      return Z_FREQS.some(f => mulData[`${group}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_${f}_deg`]?.value !== undefined);
+                    });
                     const hasGroupCap = capacitancePhases.some(p => {
                       const v = mulData[`${group}_cap_${p}`]?.value;
                       return v !== undefined && v !== null && v !== '';
@@ -2053,8 +2062,8 @@ export default function ReportScreen({ record, onChange }) {
                     // Otherwise fall back to a per-row Frequency column.
                     const impFreqSet = new Set();
                     impPhases.forEach(phase => {
-                      const zCell = mulData[`${group}_imp_${phase}_z`];
-                      const dCell = mulData[`${group}_imp_${phase}_deg`];
+                      const zCell = getImpCell(group, phase, 'z');
+                      const dCell = getImpCell(group, phase, 'deg');
                       const hasZ = zCell?.value !== undefined && zCell?.value !== null && zCell?.value !== '';
                       const hasD = dCell?.value !== undefined && dCell?.value !== null && dCell?.value !== '';
                       const fV = zCell?.frequency || dCell?.frequency;
@@ -2072,8 +2081,8 @@ export default function ReportScreen({ record, onChange }) {
 
                     const polarData = [];
                     impPhases.forEach(phase => {
-                      const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
-                      const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
+                      const zVal = getImpCell(group, phase, 'z')?.value;
+                      const degVal = getImpCell(group, phase, 'deg')?.value;
                       if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
                         polarData.push({
                           phase,
@@ -2155,8 +2164,8 @@ export default function ReportScreen({ record, onChange }) {
                                 </thead>
                                 <tbody>
                                   {impPhases.map((phase, pIdx) => {
-                                    const zCell = mulData[`${group}_imp_${phase}_z`];
-                                    const dCell = mulData[`${group}_imp_${phase}_deg`];
+                                    const zCell = getImpCell(group, phase, 'z');
+                                    const dCell = getImpCell(group, phase, 'deg');
                                     const zVal = zCell?.value;
                                     const degVal = dCell?.value;
                                     const rowFreq = zCell?.frequency || dCell?.frequency || impFreq || '—';
@@ -2185,8 +2194,8 @@ export default function ReportScreen({ record, onChange }) {
                                       if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
                                       return { bg: '#d1fae5', text: '#065f46', display };
                                     };
-                                    const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
-                                    const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_deg`]?.value);
+                                    const zVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'z')?.value);
+                                    const degVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'deg')?.value);
                                     const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
                                     const degImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
                                     const cz = imbCell(zImb);

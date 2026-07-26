@@ -1411,16 +1411,24 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       }
 
       // 5. Impedance
-      const impKey = `${group}_imp_${phase}_z`;
-      let impVal = mulData[impKey]?.value;
+      const getImpCell = (p, type) => {
+        const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+        for (const f of freqs) {
+          const cell = mulData[`${group}_imp_${p}_${f}_${type}`];
+          if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+        }
+        return mulData[`${group}_imp_${p}_${type}`];
+      };
+      const zCell = getImpCell(phase, 'z');
+      const degCell = getImpCell(phase, 'deg');
+      let impVal = zCell?.value;
       let impDisp = '—';
       if (impVal !== undefined && impVal !== null && impVal !== '') {
         impDisp = isOverload(impVal, 'Z') ? 'O.L' : String(impVal);
       }
 
       // 6. Angle
-      const degKey = `${group}_imp_${phase}_deg`;
-      let degVal = mulData[degKey]?.value;
+      let degVal = degCell?.value;
       let degDisp = '—';
       if (degVal !== undefined && degVal !== null && degVal !== '') {
         degDisp = String(degVal);
@@ -1463,10 +1471,10 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
     }
 
-    const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_z`]?.value);
+    const impVals = ['1-2', '1-3', '2-3'].map(phase => getImpCell(phase, 'z')?.value);
     const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
 
-    const degVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_deg`]?.value);
+    const degVals = ['1-2', '1-3', '2-3'].map(phase => getImpCell(phase, 'deg')?.value);
     const degSumImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
 
     const formatImbExcel = (imb) => imb !== null ? `${imb.toFixed(2)}%` : '—';
@@ -1738,7 +1746,19 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     // Table 5: Impedance Z & Phase Angle Measurements
     // ─────────────────────────────────────────────
     const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-    const hasImpData = impPhases.some(phase => mulData[`${group}_imp_${phase}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_deg`]?.value !== undefined);
+    const Z_FREQS_EXCEL = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const getTable5ImpCell = (p, type) => {
+      for (const f of Z_FREQS_EXCEL) {
+        const cell = mulData[`${group}_imp_${p}_${f}_${type}`];
+        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+      }
+      return mulData[`${group}_imp_${p}_${type}`];
+    };
+
+    const hasImpData = impPhases.some(phase => {
+      if (mulData[`${group}_imp_${phase}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_deg`]?.value !== undefined) return true;
+      return Z_FREQS_EXCEL.some(f => mulData[`${group}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_${f}_deg`]?.value !== undefined);
+    });
     
     if (hasImpData) {
       windingSheet.addRow([]); // spacer
@@ -1751,13 +1771,13 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       styleHeaderRow(t5Headers, 4);
 
       impPhases.forEach((phase, pIdx) => {
-        const zKey = `${group}_imp_${phase}_z`;
-        const degKey = `${group}_imp_${phase}_deg`;
-        const zVal = mulData[zKey]?.value;
-        const degVal = mulData[degKey]?.value;
+        const zCell = getTable5ImpCell(phase, 'z');
+        const degCell = getTable5ImpCell(phase, 'deg');
+        const zVal = zCell?.value;
+        const degVal = degCell?.value;
         const groupImpFreq = mulData[`${group}_imp_freq`]?.frequency;
-        const fVal = mulData[zKey]?.frequency;
-        const dVal = mulData[degKey]?.frequency;
+        const fVal = zCell?.frequency;
+        const dVal = degCell?.frequency;
         let zFreq = '—';
         if (fVal && fVal !== 'undefined' && fVal !== 'null') {
           zFreq = fVal;
@@ -1782,8 +1802,8 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
 
       // % Imbalance row for Impedance (Z and Phase Angle)
       {
-        const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
-        const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_deg`]?.value);
+        const zVals = ['1-2', '1-3', '2-3'].map(p => getTable5ImpCell(p, 'z')?.value);
+        const degVals = ['1-2', '1-3', '2-3'].map(p => getTable5ImpCell(p, 'deg')?.value);
         const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
         const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
         const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
@@ -2631,16 +2651,24 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       }
 
       // 5. Impedance
-      const impKey = `${groupPrefix}_imp_${phase}_z`;
-      let impVal = mulData[impKey]?.value;
+      const getPdfImpCell = (p, type) => {
+        const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+        for (const f of freqs) {
+          const cell = mulData[`${groupPrefix}_imp_${p}_${f}_${type}`];
+          if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+        }
+        return mulData[`${groupPrefix}_imp_${p}_${type}`];
+      };
+      const zPdfCell = getPdfImpCell(phase, 'z');
+      const degPdfCell = getPdfImpCell(phase, 'deg');
+      let impVal = zPdfCell?.value;
       let impDisp = '—';
       if (impVal !== undefined && impVal !== null && impVal !== '') {
         impDisp = isOverload(impVal, 'Z') ? 'O.L' : String(impVal);
       }
 
       // 6. Angle
-      const degKey = `${groupPrefix}_imp_${phase}_deg`;
-      let degVal = mulData[degKey]?.value;
+      let degVal = degPdfCell?.value;
       let degDisp = (degVal !== undefined && degVal !== null && degVal !== '') ? String(degVal) : '—';
 
       doc.rect(40, y, W, 12).fill(sumAlternate ? LGRAY : '#FFFFFF');
@@ -2706,10 +2734,10 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
     }
 
-    const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${groupPrefix}_imp_${phase}_z`]?.value);
+    const impVals = ['1-2', '1-3', '2-3'].map(phase => getPdfImpCell(phase, 'z')?.value);
     const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
 
-    const degVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${groupPrefix}_imp_${phase}_deg`]?.value);
+    const degVals = ['1-2', '1-3', '2-3'].map(phase => getPdfImpCell(phase, 'deg')?.value);
     const degSumImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
 
     doc.rect(40, y, W, 12).fill('#F1F5F9');
@@ -3007,7 +3035,19 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
 
     // --- Draw Impedance Table under RLC table if it exists ---
     const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-    const hasImpData = impPhases.some(phase => mulData[`${groupPrefix}_imp_${phase}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_deg`]?.value !== undefined);
+    const Z_FREQS_PDF = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const getPdfDetailedImpCell = (p, type) => {
+      for (const f of Z_FREQS_PDF) {
+        const cell = mulData[`${groupPrefix}_imp_${p}_${f}_${type}`];
+        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+      }
+      return mulData[`${groupPrefix}_imp_${p}_${type}`];
+    };
+
+    const hasImpData = impPhases.some(phase => {
+      if (mulData[`${groupPrefix}_imp_${phase}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_deg`]?.value !== undefined) return true;
+      return Z_FREQS_PDF.some(f => mulData[`${groupPrefix}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_${f}_deg`]?.value !== undefined);
+    });
     
     if (hasImpData) {
       if (doc.y + 130 > doc.page.height - 40) {
@@ -3035,13 +3075,13 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
 
       let impAlternate = false;
       impPhases.forEach(phase => {
-        const zKey = `${groupPrefix}_imp_${phase}_z`;
-        const degKey = `${groupPrefix}_imp_${phase}_deg`;
-        const zVal = mulData[zKey]?.value;
-        const degVal = mulData[degKey]?.value;
+        const zCell = getPdfDetailedImpCell(phase, 'z');
+        const degCell = getPdfDetailedImpCell(phase, 'deg');
+        const zVal = zCell?.value;
+        const degVal = degCell?.value;
         const groupImpFreq = mulData[`${groupPrefix}_imp_freq`]?.frequency;
-        const fVal = mulData[zKey]?.frequency;
-        const dVal = mulData[degKey]?.frequency;
+        const fVal = zCell?.frequency;
+        const dVal = degCell?.frequency;
         let zFreq = '—';
         if (fVal && fVal !== 'undefined' && fVal !== 'null') {
           zFreq = fVal;
@@ -3069,8 +3109,8 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
 
       // % Imbalance row for Impedance (Z and Phase Angle)
       {
-        const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${groupPrefix}_imp_${p}_z`]?.value);
-        const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${groupPrefix}_imp_${p}_deg`]?.value);
+        const zVals = ['1-2', '1-3', '2-3'].map(p => getPdfDetailedImpCell(p, 'z')?.value);
+        const degVals = ['1-2', '1-3', '2-3'].map(p => getPdfDetailedImpCell(p, 'deg')?.value);
         const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
         const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
         const cz = getImbalanceCellData(zImbVal);
