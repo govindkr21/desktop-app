@@ -871,12 +871,21 @@ export default function ReportScreen({ record, onChange }) {
   const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
   const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
   const statorCapImb = calculateImbalance(mulData?.['stator_cap_1-2']?.value, mulData?.['stator_cap_1-3']?.value, mulData?.['stator_cap_2-3']?.value) || calculateImbalance(mulData?.['stator_cap_1-GND']?.value, mulData?.['stator_cap_2-GND']?.value, mulData?.['stator_cap_3-GND']?.value);
-  const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
+  const getImpZVal = (group, phase) => {
+    const spot = mulData?.[`${group}_imp_${phase}_z`]?.value;
+    if (spot !== undefined && spot !== null) return spot;
+    for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+      const v = mulData?.[`${group}_imp_${phase}_${f}_z`]?.value;
+      if (v !== undefined && v !== null) return v;
+    }
+    return undefined;
+  };
+  const statorImpImb = calculateImbalance(getImpZVal('stator', '1-2'), getImpZVal('stator', '1-3'), getImpZVal('stator', '2-3'));
 
   const rotorResImb = calculateImbalance(mulData?.['rotor_res_1-2']?.value, mulData?.['rotor_res_1-3']?.value, mulData?.['rotor_res_2-3']?.value);
   const rotorIndImb = calculateImbalance(mulData?.['rotor_ind_1-2_100Hz']?.value, mulData?.['rotor_ind_1-3_100Hz']?.value, mulData?.['rotor_ind_2-3_100Hz']?.value);
   const rotorCapImb = calculateImbalance(mulData?.['rotor_cap_1-2']?.value, mulData?.['rotor_cap_1-3']?.value, mulData?.['rotor_cap_2-3']?.value) || calculateImbalance(mulData?.['rotor_cap_1-GND']?.value, mulData?.['rotor_cap_2-GND']?.value, mulData?.['rotor_cap_3-GND']?.value);
-  const rotorImpImb = calculateImbalance(mulData?.['rotor_imp_1-2_z']?.value, mulData?.['rotor_imp_1-3_z']?.value, mulData?.['rotor_imp_2-3_z']?.value);
+  const rotorImpImb = calculateImbalance(getImpZVal('rotor', '1-2'), getImpZVal('rotor', '1-3'), getImpZVal('rotor', '2-3'));
 
   const hasLStatorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`stator_ind_${p}_${f}`]?.value !== undefined));
   const hasLRotorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`rotor_ind_${p}_${f}`]?.value !== undefined));
@@ -1192,7 +1201,7 @@ export default function ReportScreen({ record, onChange }) {
                 if (statorImpImb !== null) {
                   autoVal = rateImbalance('imp', statorImpImb).text;
                 } else {
-                  const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+                  const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => getImpZVal('stator', p) !== undefined);
                   if (hasImp) autoVal = 'Normal';
                 }
               } else if (c.key === 'condFrequency') {
@@ -1580,7 +1589,7 @@ export default function ReportScreen({ record, onChange }) {
                     { key: 'condInductance', auto: () => statorIndImb !== null ? rateImbalance('ind', statorIndImb).text : '—' },
                     { key: 'condImpedance', auto: () => {
                       if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
-                      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+                      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => getImpZVal('stator', p) !== undefined);
                       return hasImp ? 'Normal' : '—';
                     }},
                     { key: 'condFrequency', auto: () => {
@@ -1751,14 +1760,24 @@ export default function ReportScreen({ record, onChange }) {
                           let capVal = mulData[capKey]?.value;
                           let capDisp = isOverload(capVal, 'C') ? 'O.L' : (capVal !== undefined && capVal !== null && capVal !== '' ? capVal : '—');
 
-                          // 5. Impedance
-                          const impKey = `${group}_imp_${phase}_z`;
-                          let impVal = mulData[impKey]?.value;
+                          // 5. Impedance — try spot key first, then fall through to sweep freq keys
+                          const impSweepFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+                          const getImpSummaryCell = (type) => {
+                            const spot = mulData[`${group}_imp_${phase}_${type}`];
+                            if (spot?.value !== undefined && spot?.value !== null && spot?.value !== '') return spot;
+                            for (const f of impSweepFreqs) {
+                              const c = mulData[`${group}_imp_${phase}_${f}_${type}`];
+                              if (c?.value !== undefined && c?.value !== null && c?.value !== '') return c;
+                            }
+                            return undefined;
+                          };
+                          const impCell = getImpSummaryCell('z');
+                          let impVal = impCell?.value;
                           let impDisp = isOverload(impVal, 'Z') ? 'O.L' : (impVal !== undefined && impVal !== null && impVal !== '' ? impVal : '—');
 
                           // 6. Angle
-                          const degKey = `${group}_imp_${phase}_deg`;
-                          let degVal = mulData[degKey]?.value;
+                          const degCell = getImpSummaryCell('deg');
+                          let degVal = degCell?.value;
                           let degDisp = (degVal !== undefined && degVal !== null && degVal !== '') ? degVal : '—';
 
                           return (
@@ -1814,10 +1833,18 @@ export default function ReportScreen({ record, onChange }) {
                             capSumImb = calculateImbalance(capGndVals[0], capGndVals[1], capGndVals[2]);
                           }
 
-                          const impVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_z`]?.value);
+                          const impVals = ['1-2', '1-3', '2-3'].map(p => getImpZVal(group, p));
                           const impSumImb = calculateImbalance(impVals[0], impVals[1], impVals[2]);
 
-                          const degVals = ['1-2', '1-3', '2-3'].map(phase => mulData[`${group}_imp_${phase}_deg`]?.value);
+                          const degVals = ['1-2', '1-3', '2-3'].map(p => {
+                            const spot = mulData[`${group}_imp_${p}_deg`]?.value;
+                            if (spot !== undefined && spot !== null) return spot;
+                            for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+                              const v = mulData[`${group}_imp_${p}_${f}_deg`]?.value;
+                              if (v !== undefined && v !== null) return v;
+                            }
+                            return undefined;
+                          });
                           const degSumImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
 
                           const cellDcr = getImbalanceCellData(dcrSumImb);
@@ -2079,19 +2106,6 @@ export default function ReportScreen({ record, onChange }) {
                     const impHeaderSuffix = impSingleFreq ? ` [${impSingleFreq}]` : '';
                     const showImpFreqColumn = impFreqs.length > 1;
 
-                    const polarData = [];
-                    impPhases.forEach(phase => {
-                      const zVal = getImpCell(group, phase, 'z')?.value;
-                      const degVal = getImpCell(group, phase, 'deg')?.value;
-                      if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
-                        polarData.push({
-                          phase,
-                          z: parseFloat(zVal),
-                          deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
-                        });
-                      }
-                    });
-
                     return (
                       <div style={{ marginTop: 16 }}>
                         {hasGroupImp && (
@@ -2148,73 +2162,124 @@ export default function ReportScreen({ record, onChange }) {
                               </table>
                             </div>
                           )}
-                          {hasGroupImp && (
-                            <div style={{ flex: 1.2, overflowX: 'auto' }}>
-                              <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance{impHeaderSuffix}</h6>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
-                                <thead>
-                                  <tr style={{ background: '#1e40af', color: '#fff' }}>
-                                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
-                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
-                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
-                                    {showImpFreqColumn && (
-                                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {impPhases.map((phase, pIdx) => {
-                                    const zCell = getImpCell(group, phase, 'z');
-                                    const dCell = getImpCell(group, phase, 'deg');
-                                    const zVal = zCell?.value;
-                                    const degVal = dCell?.value;
-                                    const rowFreq = zCell?.frequency || dCell?.frequency || impFreq || '—';
-                                    return (
-                                      <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                        <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
-                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                          {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
-                                        </td>
-                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                          {degVal !== undefined ? degVal : '—'}
-                                        </td>
-                                        {showImpFreqColumn && (
-                                          <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                            {(rowFreq && rowFreq !== 'undefined' && rowFreq !== 'null') ? rowFreq : '—'}
-                                          </td>
-                                        )}
+                          {hasGroupImp && (() => {
+                            const impSweepFreqs = Z_FREQS;
+                            const hasSweep = impPhases.some(p => impSweepFreqs.some(f =>
+                              mulData[`${group}_imp_${p}_${f}_z`]?.value !== undefined ||
+                              mulData[`${group}_imp_${p}_${f}_deg`]?.value !== undefined
+                            ));
+                            const imbCell = (imb) => {
+                              if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                              const display = `${imb.toFixed(2)}%`;
+                              if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                              if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                              return { bg: '#d1fae5', text: '#065f46', display };
+                            };
+
+                            if (hasSweep) {
+                              return (
+                                <div style={{ flex: 1.2, overflowX: 'auto' }}>
+                                  <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance Sweep</h6>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9, background: '#fff', border: '1px solid #cbd5e1' }}>
+                                    <thead>
+                                      <tr style={{ background: '#1e40af', color: '#fff' }}>
+                                        <th style={{ padding: '5px 6px', textAlign: 'left' }}>Phase Line</th>
+                                        {impSweepFreqs.map(f => (
+                                          <th key={f} style={{ padding: '5px 4px', textAlign: 'center' }}>{f}</th>
+                                        ))}
                                       </tr>
-                                    );
-                                  })}
-                                  {(() => {
-                                    const imbCell = (imb) => {
-                                      if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
-                                      const display = `${imb.toFixed(2)}%`;
-                                      if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
-                                      if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
-                                      return { bg: '#d1fae5', text: '#065f46', display };
-                                    };
-                                    const zVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'z')?.value);
-                                    const degVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'deg')?.value);
-                                    const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
-                                    const degImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
-                                    const cz = imbCell(zImb);
-                                    const cd = imbCell(degImb);
-                                    return (
+                                    </thead>
+                                    <tbody>
+                                      {impPhases.map((phase, pIdx) => {
+                                        const bg = pIdx % 2 === 0 ? '#fff' : '#f8fafc';
+                                        return [
+                                          <tr key={`${phase}-z`} style={{ borderBottom: '1px solid #f1f5f9', background: bg }}>
+                                            <td style={{ padding: '3px 6px', fontWeight: 700, fontSize: 9 }}>
+                                              Phase {phase}<br /><span style={{ fontSize: 8, color: '#64748b', fontWeight: 400 }}>Z (Ω) / Deg (°)</span>
+                                            </td>
+                                            {impSweepFreqs.map(f => {
+                                              const zv = mulData[`${group}_imp_${phase}_${f}_z`]?.value;
+                                              const dv = mulData[`${group}_imp_${phase}_${f}_deg`]?.value;
+                                              return (
+                                                <td key={f} style={{ padding: '3px 4px', textAlign: 'center', fontFamily: 'monospace', fontSize: 9 }}>
+                                                  <div>{zv !== undefined ? (isOverload(zv, 'Z') ? 'O.L' : zv) : '—'}</div>
+                                                  <div style={{ color: '#64748b', fontSize: 8 }}>{dv !== undefined ? dv : '—'}</div>
+                                                </td>
+                                              );
+                                            })}
+                                          </tr>
+                                        ];
+                                      })}
                                       <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
-                                        <td style={{ padding: '6px 8px', color: '#1e3a8a' }}>% Imbalance</td>
-                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cz.bg, color: cz.text, fontFamily: 'monospace' }}>{cz.display}</td>
-                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cd.bg, color: cd.text, fontFamily: 'monospace' }}>{cd.display}</td>
-                                        {showImpFreqColumn && (
-                                          <td style={{ padding: '6px 8px' }}>&nbsp;</td>
-                                        )}
+                                        <td style={{ padding: '5px 6px', color: '#1e3a8a', fontSize: 9 }}>% Imbalance</td>
+                                        {impSweepFreqs.map(f => {
+                                          const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_${f}_z`]?.value);
+                                          const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+                                          const cz = imbCell(zImb);
+                                          return (
+                                            <td key={f} style={{ padding: '5px 4px', textAlign: 'center', background: cz.bg, color: cz.text, fontFamily: 'monospace', fontSize: 9 }}>
+                                              {cz.display}
+                                            </td>
+                                          );
+                                        })}
                                       </tr>
-                                    );
-                                  })()}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              );
+                            }
+
+                            // fallback: single-frequency table
+                            return (
+                              <div style={{ flex: 1.2, overflowX: 'auto' }}>
+                                <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance{impHeaderSuffix}</h6>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
+                                  <thead>
+                                    <tr style={{ background: '#1e40af', color: '#fff' }}>
+                                      <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
+                                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
+                                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {impPhases.map((phase, pIdx) => {
+                                      const zCell = getImpCell(group, phase, 'z');
+                                      const dCell = getImpCell(group, phase, 'deg');
+                                      const zVal = zCell?.value;
+                                      const degVal = dCell?.value;
+                                      return (
+                                        <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
+                                          <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                            {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
+                                          </td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                            {degVal !== undefined ? degVal : '—'}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                    {(() => {
+                                      const zVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'z')?.value);
+                                      const degVals = ['1-2', '1-3', '2-3'].map(p => getImpCell(group, p, 'deg')?.value);
+                                      const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+                                      const degImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
+                                      const cz = imbCell(zImb);
+                                      const cd = imbCell(degImb);
+                                      return (
+                                        <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                                          <td style={{ padding: '6px 8px', color: '#1e3a8a' }}>% Imbalance</td>
+                                          <td style={{ padding: '6px 8px', textAlign: 'right', background: cz.bg, color: cz.text, fontFamily: 'monospace' }}>{cz.display}</td>
+                                          <td style={{ padding: '6px 8px', textAlign: 'right', background: cd.bg, color: cd.text, fontFamily: 'monospace' }}>{cd.display}</td>
+                                        </tr>
+                                      );
+                                    })()}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })()}
+
                         </div>
                       </div>
                     );
@@ -2276,45 +2341,110 @@ export default function ReportScreen({ record, onChange }) {
               </div>
             )}
 
-            {/* Impedance Polar Plots — col-md-6 each, before sweep charts */}
+            {/* Impedance Z Sweep Charts + Polar Plots side by side */}
             {(() => {
               const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+              const sweepFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+              const phaseColors = { '1-2': '#E11D48', '1-3': '#10B981', '2-3': '#D97706', '1-N': '#7C3AED', '2-N': '#06B6D4', '3-N': '#EC4899' };
+
               const buildPolarData = (group) => {
                 const arr = [];
                 impPhases.forEach(phase => {
-                  const zVal = mulData[`${group}_imp_${phase}_z`]?.value;
-                  const degVal = mulData[`${group}_imp_${phase}_deg`]?.value;
+                  const zVal = getImpZVal(group, phase);
+                  const degVal = (() => {
+                    const spot = mulData?.[`${group}_imp_${phase}_deg`]?.value;
+                    if (spot !== undefined && spot !== null) return spot;
+                    for (const f of sweepFreqs) {
+                      const v = mulData?.[`${group}_imp_${phase}_${f}_deg`]?.value;
+                      if (v !== undefined && v !== null) return v;
+                    }
+                    return undefined;
+                  })();
                   if (zVal !== undefined && zVal !== null && !isNaN(parseFloat(zVal))) {
-                    arr.push({
-                      phase,
-                      z: parseFloat(zVal),
-                      deg: degVal !== undefined && degVal !== null && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0
-                    });
+                    arr.push({ phase, z: parseFloat(zVal), deg: degVal !== undefined && !isNaN(parseFloat(degVal)) ? parseFloat(degVal) : 0 });
                   }
                 });
                 return arr;
               };
-              const statorPolar = buildPolarData('stator');
-              const rotorPolar = includeRotor ? buildPolarData('rotor') : [];
-              if (statorPolar.length === 0 && rotorPolar.length === 0) return null;
+
+              const buildZChartData = (group) => sweepFreqs.map(f => {
+                const obj = { name: f };
+                impPhases.forEach(phase => {
+                  const v = mulData?.[`${group}_imp_${phase}_${f}_z`]?.value;
+                  if (v !== undefined && v !== null) obj[phase] = parseFloat(v);
+                });
+                return obj;
+              });
+
+              const renderGroupZSection = (group, label) => {
+                const polarData = buildPolarData(group);
+                const chartData = buildZChartData(group);
+                const hasChart = chartData.some(d => impPhases.some(p => d[p] !== undefined));
+                if (polarData.length === 0 && !hasChart) return null;
+
+                let minV = Infinity, maxV = -Infinity;
+                chartData.forEach(d => impPhases.forEach(p => { if (d[p] !== undefined) { if (d[p] < minV) minV = d[p]; if (d[p] > maxV) maxV = d[p]; } }));
+                const span = maxV - minV;
+                const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(maxV) * 0.1, 0.5);
+                const yDomain = isFinite(minV) ? [Math.max(0, Math.floor(minV - pad)), Math.ceil(maxV + pad)] : ['auto', 'auto'];
+
+                let zMaxImbalance = 0;
+                sweepFreqs.forEach(f => {
+                  const v12 = mulData[`${group}_imp_1-2_${f}_z`]?.value;
+                  const v13 = mulData[`${group}_imp_1-3_${f}_z`]?.value;
+                  const v23 = mulData[`${group}_imp_2-3_${f}_z`]?.value;
+                  const imb = calculateImbalance(v12, v13, v23);
+                  if (imb !== null && imb > zMaxImbalance) zMaxImbalance = imb;
+                });
+
+                return (
+                  <div key={group} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                    {hasChart && (
+                      <div id={`chart-${group}-imp`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>{label} Impedance Z Sweep (Ω)</h5>
+                        <div style={{ height: 220, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6 }}>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                              <XAxis dataKey="name" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
+                              <YAxis domain={yDomain} allowDecimals width={48} tickFormatter={formatAxisTick} style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
+                              <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4, border: '1px solid #cbd5e1', background: '#fff' }} />
+                              <Legend verticalAlign="bottom" height={28} iconSize={8} iconType="circle" wrapperStyle={{ fontSize: 8, fontWeight: 700, paddingTop: 8 }} />
+                              {impPhases.map(phase => {
+                                if (!chartData.some(d => d[phase] !== undefined)) return null;
+                                return <Line key={phase} type="linear" dataKey={phase} name={`Phase ${phase}`} stroke={phaseColors[phase] || '#64748b'} strokeWidth={1.5} dot={{ r: 2 }} activeDot={{ r: 4 }} connectNulls />;
+                              })}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                        {zMaxImbalance > 0 && (
+                          <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: zMaxImbalance < 5 ? '#16a34a' : '#dc2626' }}>
+                            Max Imbalance: {zMaxImbalance.toFixed(2)}% | Condition Status: {zMaxImbalance < 5 ? 'Normal / Good' : 'Investigate (High Imbalance)'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {polarData.length > 0 && (
+                      <div id={`chart-polar-${group}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
+                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>{label} Impedance Polar Plot</h5>
+                        <PolarPlot data={polarData} size={220} />
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+
+              const statorSection = renderGroupZSection('stator', 'Stator');
+              const rotorSection = includeRotor ? renderGroupZSection('rotor', 'Rotor') : null;
+              if (!statorSection && !rotorSection) return null;
               return (
                 <div style={{ marginTop: 20 }}>
                   <h4 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', marginBottom: 12, borderBottom: '1px solid #e2e8f0', paddingBottom: 4 }}>
-                    🎯 Impedance Polar Plots
+                    🎯 Impedance Z Sweep &amp; Polar Plots
                   </h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
-                    {statorPolar.length > 0 && (
-                      <div id="chart-polar-stator" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
-                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Stator Impedance Polar Plot</h5>
-                        <PolarPlot data={statorPolar} size={220} />
-                      </div>
-                    )}
-                    {rotorPolar.length > 0 && (
-                      <div id="chart-polar-rotor" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
-                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Rotor Impedance Polar Plot</h5>
-                        <PolarPlot data={rotorPolar} size={220} />
-                      </div>
-                    )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {statorSection}
+                    {rotorSection}
                   </div>
                 </div>
               );

@@ -712,9 +712,12 @@ function drawPDFPolarGraph(doc, title, startX, startY, size, impData) {
     else if (zoomQuadrant === 3) { originX = plotRight; originY = plotTop; }
     else                          { originX = plotLeft;  originY = plotTop; }
 
-  // Title
-  doc.fillColor('#1E3A8A').fontSize(8.5).font('Helvetica-Bold')
-    .text(centered ? title : `${title} — Q${zoomQuadrant}`, startX, startY + 2, { width: size, align: 'center' });
+  // Title (only render if non-empty; callers may draw their own title externally)
+  if (title) {
+    const titleText = centered ? title : `${title} — Q${zoomQuadrant}`;
+    doc.fillColor('#1E3A8A').fontSize(8.5).font('Helvetica-Bold')
+      .text(titleText, startX, startY + 2, { width: size, align: 'center' });
+  }
 
   // Grid — full circles when centered, quarter-arcs when zoomed. PDFKit's path()
   // accepts SVG path data, so we build an "M …  A …" arc string.
@@ -1190,7 +1193,16 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     // Winding Imbalances at card group level for defaults
     const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
     const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
-    const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
+    const getImpZForImbPdf = (p) => {
+      const spot = mulData?.[`stator_imp_${p}_z`]?.value;
+      if (spot !== undefined && spot !== null) return spot;
+      for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+        const v = mulData?.[`stator_imp_${p}_${f}_z`]?.value;
+        if (v !== undefined && v !== null) return v;
+      }
+      return undefined;
+    };
+    const statorImpImb = calculateImbalance(getImpZForImbPdf('1-2'), getImpZForImbPdf('1-3'), getImpZForImbPdf('2-3'));
 
     if (key === 'condResistance') {
       return statorResImb !== null ? rateImbalance('acRes', statorResImb).text : '—';
@@ -1200,7 +1212,7 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     }
     if (key === 'condImpedance') {
       if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
-      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => getImpZForImbPdf(p) !== undefined);
       return hasImp ? 'Normal' : '—';
     }
     if (key === 'condFrequency') {
@@ -1369,6 +1381,15 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     });
     t0Headers2.height = 16;
 
+    const getImpCell = (p, type) => {
+      const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+      for (const f of freqs) {
+        const cell = mulData[`${group}_imp_${p}_${f}_${type}`];
+        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+      }
+      return mulData[`${group}_imp_${p}_${type}`];
+    };
+
     standardPhases.forEach((phase, pIdx) => {
       // 1. DCR
       const dcrKey = `${group}_res_${phase}`;
@@ -1411,14 +1432,6 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
       }
 
       // 5. Impedance
-      const getImpCell = (p, type) => {
-        const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-        for (const f of freqs) {
-          const cell = mulData[`${group}_imp_${p}_${f}_${type}`];
-          if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
-        }
-        return mulData[`${group}_imp_${p}_${type}`];
-      };
       const zCell = getImpCell(phase, 'z');
       const degCell = getImpCell(phase, 'deg');
       let impVal = zCell?.value;
@@ -1743,71 +1756,106 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
     }
 
     // ─────────────────────────────────────────────
-    // Table 5: Impedance Z & Phase Angle Measurements
+    // Table 5: Impedance Z & Phase Angle Sweep
     // ─────────────────────────────────────────────
     const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
     const Z_FREQS_EXCEL = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    const getTable5ImpCell = (p, type) => {
-      for (const f of Z_FREQS_EXCEL) {
-        const cell = mulData[`${group}_imp_${p}_${f}_${type}`];
-        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
-      }
-      return mulData[`${group}_imp_${p}_${type}`];
-    };
 
-    const hasImpData = impPhases.some(phase => {
-      if (mulData[`${group}_imp_${phase}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_deg`]?.value !== undefined) return true;
-      return Z_FREQS_EXCEL.some(f => mulData[`${group}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_${f}_deg`]?.value !== undefined);
-    });
-    
+    const hasImpSweepData = impPhases.some(phase =>
+      Z_FREQS_EXCEL.some(f => mulData[`${group}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_${f}_deg`]?.value !== undefined)
+    );
+    const hasImpSpotData = impPhases.some(phase =>
+      mulData[`${group}_imp_${phase}_z`]?.value !== undefined || mulData[`${group}_imp_${phase}_deg`]?.value !== undefined
+    );
+    const hasImpData = hasImpSweepData || hasImpSpotData;
+
     if (hasImpData) {
-      windingSheet.addRow([]); // spacer
-      const t5Title = windingSheet.addRow([`${groupName} Impedance (Z & Phase Angle) Measurements`]);
-      windingSheet.mergeCells(`A${t5Title.number}:D${t5Title.number}`);
+      windingSheet.addRow([]);
+      const t5Title = windingSheet.addRow([`${groupName} Impedance Z Sweep (Ω)`]);
+      const t5ColCount = 1 + Z_FREQS_EXCEL.length;
+      windingSheet.mergeCells(`A${t5Title.number}:${String.fromCharCode(64 + t5ColCount)}${t5Title.number}`);
       t5Title.getCell(1).font = boldFont;
 
-      // Temp column dropped — group temperature is shown once in the group header banner.
-      const t5Headers = windingSheet.addRow(['Phase Line', 'Impedance Z (Ω)', 'Phase Angle (°)', 'Frequency']);
-      styleHeaderRow(t5Headers, 4);
+      if (hasImpSweepData) {
+        // Multi-frequency sweep table: Phase Line | 100Hz Z | 120Hz Z | 1kHz Z | 10kHz Z | 100kHz Z
+        // With sub-row for Deg below each phase's Z row
+        const t5ZHeaders = windingSheet.addRow(['Phase Line (Z Ω)', ...Z_FREQS_EXCEL]);
+        styleHeaderRow(t5ZHeaders, t5ColCount);
 
-      impPhases.forEach((phase, pIdx) => {
-        const zCell = getTable5ImpCell(phase, 'z');
-        const degCell = getTable5ImpCell(phase, 'deg');
-        const zVal = zCell?.value;
-        const degVal = degCell?.value;
-        const groupImpFreq = mulData[`${group}_imp_freq`]?.frequency;
-        const fVal = zCell?.frequency;
-        const dVal = degCell?.frequency;
-        let zFreq = '—';
-        if (fVal && fVal !== 'undefined' && fVal !== 'null') {
-          zFreq = fVal;
-        } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
-          zFreq = dVal;
-        } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
-          zFreq = groupImpFreq;
-        }
+        impPhases.forEach((phase, pIdx) => {
+          const zVals = Z_FREQS_EXCEL.map(f => {
+            const v = mulData[`${group}_imp_${phase}_${f}_z`]?.value;
+            return (v !== undefined && v !== null && v !== '') ? (isOverload(v, 'Z') ? 'O.L' : String(v)) : '—';
+          });
+          const degVals = Z_FREQS_EXCEL.map(f => {
+            const v = mulData[`${group}_imp_${phase}_${f}_deg`]?.value;
+            return (v !== undefined && v !== null && v !== '') ? String(v) : '—';
+          });
 
-        let zDisplay = '—';
-        if (zVal !== undefined && zVal !== null && zVal !== '') {
-          zDisplay = isOverload(zVal, 'Z') ? 'O.L' : String(zVal);
-        }
-        let degDisplay = '—';
-        if (degVal !== undefined && degVal !== null && degVal !== '') {
-          degDisplay = String(degVal);
-        }
+          const zRow = windingSheet.addRow([`Phase ${phase} Z (Ω)`, ...zVals]);
+          styleBodyRow(zRow, t5ColCount, pIdx % 2 === 1);
 
-        const row = windingSheet.addRow([`Phase ${phase}`, zDisplay, degDisplay, zFreq]);
-        styleBodyRow(row, 4, pIdx % 2 === 1);
-      });
+          const degRow = windingSheet.addRow([`Phase ${phase} Deg (°)`, ...degVals]);
+          degRow.eachCell((cell, colNum) => {
+            cell.border = borders;
+            cell.alignment = { horizontal: 'center' };
+            if (colNum === 1) {
+              cell.font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF64748B' } };
+            } else {
+              cell.font = { name: 'Arial', size: 9, color: { argb: 'FF64748B' } };
+              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: pIdx % 2 === 1 ? 'FFF8FAFC' : 'FFFFFFFF' } };
+            }
+          });
+        });
 
-      // % Imbalance row for Impedance (Z and Phase Angle)
-      {
+        // % Imbalance row per frequency (Z only)
+        const zImbVals = Z_FREQS_EXCEL.map(f => {
+          const v12 = mulData[`${group}_imp_1-2_${f}_z`]?.value;
+          const v13 = mulData[`${group}_imp_1-3_${f}_z`]?.value;
+          const v23 = mulData[`${group}_imp_2-3_${f}_z`]?.value;
+          return calculateImbalance(v12, v13, v23);
+        });
+        const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
+        const impImbRow = windingSheet.addRow(['% Imbalance (Z)', ...zImbVals.map(fmt)]);
+        impImbRow.eachCell((cell, colNum) => {
+          cell.border = borders;
+          cell.alignment = { horizontal: 'center' };
+          if (colNum === 1) {
+            cell.font = { name: 'Arial', bold: true, color: { argb: 'FF1E3A8A' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+          } else {
+            const imb = zImbVals[colNum - 2];
+            cell.fill = getImbalanceFillExcel(imb);
+            cell.font = getImbalanceFontExcel(imb);
+          }
+        });
+      } else {
+        // Fallback: spot values only
+        const getTable5ImpCell = (p, type) => {
+          const spot = mulData[`${group}_imp_${p}_${type}`];
+          if (spot?.value !== undefined && spot?.value !== null && spot?.value !== '') return spot;
+          for (const f of Z_FREQS_EXCEL) {
+            const c = mulData[`${group}_imp_${p}_${f}_${type}`];
+            if (c?.value !== undefined && c?.value !== null && c?.value !== '') return c;
+          }
+          return undefined;
+        };
+        const t5Headers = windingSheet.addRow(['Phase Line', 'Impedance Z (Ω)', 'Phase Angle (°)']);
+        styleHeaderRow(t5Headers, 3);
+        impPhases.forEach((phase, pIdx) => {
+          const zCell = getTable5ImpCell(phase, 'z');
+          const degCell = getTable5ImpCell(phase, 'deg');
+          const zDisplay = zCell?.value !== undefined ? (isOverload(zCell.value, 'Z') ? 'O.L' : String(zCell.value)) : '—';
+          const degDisplay = degCell?.value !== undefined ? String(degCell.value) : '—';
+          const row = windingSheet.addRow([`Phase ${phase}`, zDisplay, degDisplay]);
+          styleBodyRow(row, 3, pIdx % 2 === 1);
+        });
         const zVals = ['1-2', '1-3', '2-3'].map(p => getTable5ImpCell(p, 'z')?.value);
         const degVals = ['1-2', '1-3', '2-3'].map(p => getTable5ImpCell(p, 'deg')?.value);
         const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
         const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
         const fmt = (imb) => imb === null || imb === undefined ? '—' : `${imb.toFixed(2)}%`;
-        const impImbRow = windingSheet.addRow(['% Imbalance', fmt(zImbVal), fmt(degImbVal), '']);
+        const impImbRow = windingSheet.addRow(['% Imbalance', fmt(zImbVal), fmt(degImbVal)]);
         impImbRow.eachCell((cell, colNum) => {
           cell.border = borders;
           cell.alignment = { horizontal: 'center' };
@@ -1910,9 +1958,6 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
   windingFootnoteRow.getCell(1).font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF64748B' } };
 
   // ── Sheet: Winding Frequency Sweep ──
-  const tablePhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
-  const tableFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-
   const hasStatorIndSweep = hasSweepDataForGroup(mulData, 'stator', 'ind');
   const hasStatorResSweep = hasSweepDataForGroup(mulData, 'stator', 'res');
   const hasRotorIndSweep = hasSweepDataForGroup(mulData, 'rotor', 'ind');
@@ -2070,7 +2115,7 @@ async function exportExcel(recordId, mainWindow, chartImages, opts = {}) {
           rawResistance: rawRes,
           corrResistance: corrRes
         });
-        row.eachCell((cell, colNum) => {
+        row.eachCell((cell) => {
           cell.font = bodyFont;
           cell.border = borders;
           cell.alignment = { horizontal: 'center' };
@@ -2452,7 +2497,16 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     // Winding Imbalances at card group level for defaults
     const statorResImb = calculateImbalance(mulData?.['stator_res_1-2']?.value, mulData?.['stator_res_1-3']?.value, mulData?.['stator_res_2-3']?.value);
     const statorIndImb = calculateImbalance(mulData?.['stator_ind_1-2_100Hz']?.value, mulData?.['stator_ind_1-3_100Hz']?.value, mulData?.['stator_ind_2-3_100Hz']?.value);
-    const statorImpImb = calculateImbalance(mulData?.['stator_imp_1-2_z']?.value, mulData?.['stator_imp_1-3_z']?.value, mulData?.['stator_imp_2-3_z']?.value);
+    const getImpZForImb = (p) => {
+      const spot = mulData?.[`stator_imp_${p}_z`]?.value;
+      if (spot !== undefined && spot !== null) return spot;
+      for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+        const v = mulData?.[`stator_imp_${p}_${f}_z`]?.value;
+        if (v !== undefined && v !== null) return v;
+      }
+      return undefined;
+    };
+    const statorImpImb = calculateImbalance(getImpZForImb('1-2'), getImpZForImb('1-3'), getImpZForImb('2-3'));
 
     if (key === 'condResistance') {
       return statorResImb !== null ? rateImbalance('acRes', statorResImb).text : '—';
@@ -2462,7 +2516,7 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     }
     if (key === 'condImpedance') {
       if (statorImpImb !== null) return rateImbalance('imp', statorImpImb).text;
-      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => mulData[`stator_imp_${p}_z`]?.value !== undefined);
+      const hasImp = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => getImpZForImb(p) !== undefined);
       return hasImp ? 'Normal' : '—';
     }
     if (key === 'condFrequency') {
@@ -2551,12 +2605,8 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     }
     doc.moveDown(0.2);
 
-    const resFreq = mulData[`${groupPrefix}_res_freq`]?.frequency;
-    const indFreq = mulData[`${groupPrefix}_ind_freq`]?.frequency;
     const capFreq = mulData[`${groupPrefix}_cap_freq`]?.frequency;
 
-    const cleanResFreq = ' [0Hz]';
-    const cleanIndFreq = (indFreq && indFreq !== 'undefined') ? ` [${indFreq}]` : '';
     const cleanCapFreq = (capFreq && capFreq !== 'undefined') ? ` [${capFreq}]` : '';
 
     const standardPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N', '123-GND', '1-GND', '2-GND', '3-GND'];
@@ -2608,6 +2658,15 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     });
     y += 12;
 
+    const getPdfImpCell = (p, type) => {
+      const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+      for (const f of freqs) {
+        const cell = mulData[`${groupPrefix}_imp_${p}_${f}_${type}`];
+        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+      }
+      return mulData[`${groupPrefix}_imp_${p}_${type}`];
+    };
+
     let sumAlternate = false;
     standardPhases.forEach(phase => {
       // 1. DCR
@@ -2651,14 +2710,6 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       }
 
       // 5. Impedance
-      const getPdfImpCell = (p, type) => {
-        const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-        for (const f of freqs) {
-          const cell = mulData[`${groupPrefix}_imp_${p}_${f}_${type}`];
-          if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
-        }
-        return mulData[`${groupPrefix}_imp_${p}_${type}`];
-      };
       const zPdfCell = getPdfImpCell(phase, 'z');
       const degPdfCell = getPdfImpCell(phase, 'deg');
       let impVal = zPdfCell?.value;
@@ -3033,96 +3084,84 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
 
     doc.y = y + 10;
 
-    // --- Draw Impedance Table under RLC table if it exists ---
+    // --- Draw Impedance Sweep Table (multi-frequency, matches UI layout) ---
     const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
     const Z_FREQS_PDF = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    const getPdfDetailedImpCell = (p, type) => {
-      for (const f of Z_FREQS_PDF) {
-        const cell = mulData[`${groupPrefix}_imp_${p}_${f}_${type}`];
-        if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
-      }
-      return mulData[`${groupPrefix}_imp_${p}_${type}`];
-    };
 
-    const hasImpData = impPhases.some(phase => {
-      if (mulData[`${groupPrefix}_imp_${phase}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_deg`]?.value !== undefined) return true;
-      return Z_FREQS_PDF.some(f => mulData[`${groupPrefix}_imp_${phase}_${f}_z`]?.value !== undefined || mulData[`${groupPrefix}_imp_${phase}_${f}_deg`]?.value !== undefined);
-    });
-    
+    const hasImpSweepData = impPhases.some(phase =>
+      Z_FREQS_PDF.some(f => mulData[`${groupPrefix}_imp_${phase}_${f}_z`]?.value !== undefined)
+    );
+    const hasImpSpotData = impPhases.some(phase =>
+      mulData[`${groupPrefix}_imp_${phase}_z`]?.value !== undefined
+    );
+    const hasImpData = hasImpSweepData || hasImpSpotData;
+
     if (hasImpData) {
-      if (doc.y + 130 > doc.page.height - 40) {
+      const rowsNeeded = impPhases.length * 2 + 3; // 2 rows (Z+Deg) per phase + header + imbalance + title
+      if (doc.y + rowsNeeded * 11 + 20 > doc.page.height - 40) {
         doc.addPage();
         drawHeader(groupPrefix === 'stator' ? 'STATOR WINDING TEST' : 'ROTOR WINDING TEST');
       }
 
-      doc.fontSize(9).font('Helvetica-Bold').fillColor(BLUE).text(`${groupLabel} Impedance (Z & Phase Angle)`, 40);
-      doc.moveDown(0.2);
+      doc.fontSize(9).font('Helvetica-Bold').fillColor(BLUE).text(`${groupLabel} Winding Impedance Z Sweep`, 40);
+      doc.moveDown(0.3);
 
-      const startY = doc.y;
+      const labelCol = W * 0.16;
+      const freqColW = (W - labelCol) / Z_FREQS_PDF.length;
+      let iy = doc.y;
 
-      // Temp column dropped — group temperature is shown once in the header chip.
-      const impCols = [W * 0.25, W * 0.25, W * 0.25, W * 0.25];
-      const impHeaders = ['Phase Line', 'Z (Ohms)', 'Angle (°)', 'Frequency'];
-      let iy = startY;
-      let ix = 40;
-
-      doc.rect(40, iy, W, 18).fill(BLUE);
-      impHeaders.forEach((h, idx) => {
-        doc.fillColor('#FFFFFF').fontSize(7.5).font('Helvetica-Bold').text(h, ix, iy + 5, { width: impCols[idx], align: 'center' });
-        ix += impCols[idx];
+      // Header row: blank label | 100Hz | 120Hz | 1kHz | 10kHz | 100kHz
+      doc.rect(40, iy, W, 16).fill(BLUE);
+      doc.rect(40, iy, labelCol, 16).fill(BLUE);
+      Z_FREQS_PDF.forEach((f, fi) => {
+        const fx = 40 + labelCol + fi * freqColW;
+        doc.fillColor('#FFFFFF').fontSize(7).font('Helvetica-Bold').text(f, fx, iy + 4.5, { width: freqColW, align: 'center' });
       });
-      iy += 18;
+      iy += 16;
 
-      let impAlternate = false;
-      impPhases.forEach(phase => {
-        const zCell = getPdfDetailedImpCell(phase, 'z');
-        const degCell = getPdfDetailedImpCell(phase, 'deg');
-        const zVal = zCell?.value;
-        const degVal = degCell?.value;
-        const groupImpFreq = mulData[`${groupPrefix}_imp_freq`]?.frequency;
-        const fVal = zCell?.frequency;
-        const dVal = degCell?.frequency;
-        let zFreq = '—';
-        if (fVal && fVal !== 'undefined' && fVal !== 'null') {
-          zFreq = fVal;
-        } else if (dVal && dVal !== 'undefined' && dVal !== 'null') {
-          zFreq = dVal;
-        } else if (groupImpFreq && groupImpFreq !== 'undefined' && groupImpFreq !== 'null') {
-          zFreq = groupImpFreq;
-        }
-        doc.rect(40, iy, W, 13).fill(impAlternate ? LGRAY : '#FFFFFF');
+      impPhases.forEach((phase, pIdx) => {
+        const bg = pIdx % 2 === 0 ? '#FFFFFF' : LGRAY;
+        const rowH = 11;
 
-        ix = 40;
-        doc.fillColor(DARK_GRAY).fontSize(7.5).font('Helvetica-Bold').text(`Phase ${phase}`, ix + 6, iy + 2.5, { width: impCols[0] - 12, align: 'left' });
-        ix += impCols[0];
+        // Z row
+        doc.rect(40, iy, W, rowH).fill(bg);
+        doc.fillColor(DARK_GRAY).fontSize(7).font('Helvetica-Bold')
+          .text(`Phase ${phase}`, 44, iy + 2, { width: labelCol - 8, align: 'left' });
+        Z_FREQS_PDF.forEach((f, fi) => {
+          const fx = 40 + labelCol + fi * freqColW;
+          const v = mulData[`${groupPrefix}_imp_${phase}_${f}_z`]?.value;
+          const display = (v !== undefined && v !== null && v !== '') ? (isOverload(v, 'Z') ? 'O.L' : String(v)) : '—';
+          doc.fillColor(DARK_GRAY).fontSize(7).font('Helvetica').text(display, fx, iy + 2, { width: freqColW, align: 'center' });
+        });
+        iy += rowH;
 
-        doc.font('Helvetica').fontSize(7.5);
-        doc.text(zVal !== undefined ? (isOverload(zVal, 'Z') ? 'O.L' : String(zVal)) : '—', ix, iy + 2.5, { width: impCols[1], align: 'center' });
-        ix += impCols[1];
-        doc.text(degVal !== undefined ? String(degVal) : '—', ix, iy + 2.5, { width: impCols[2], align: 'center' });
-        ix += impCols[2];
-        doc.text(String(zFreq), ix, iy + 2.5, { width: impCols[3], align: 'center' });
-
-        iy += 13;
-        impAlternate = !impAlternate;
+        // Deg row
+        doc.rect(40, iy, W, rowH).fill(bg);
+        doc.fillColor('#64748B').fontSize(6.5).font('Helvetica-Oblique')
+          .text('Deg (°)', 44, iy + 2, { width: labelCol - 8, align: 'left' });
+        Z_FREQS_PDF.forEach((f, fi) => {
+          const fx = 40 + labelCol + fi * freqColW;
+          const v = mulData[`${groupPrefix}_imp_${phase}_${f}_deg`]?.value;
+          const display = (v !== undefined && v !== null && v !== '') ? String(v) : '—';
+          doc.fillColor('#1E40AF').fontSize(6.5).font('Helvetica').text(display, fx, iy + 2, { width: freqColW, align: 'center' });
+        });
+        iy += rowH;
       });
 
-      // % Imbalance row for Impedance (Z and Phase Angle)
-      {
-        const zVals = ['1-2', '1-3', '2-3'].map(p => getPdfDetailedImpCell(p, 'z')?.value);
-        const degVals = ['1-2', '1-3', '2-3'].map(p => getPdfDetailedImpCell(p, 'deg')?.value);
-        const zImbVal = calculateImbalance(zVals[0], zVals[1], zVals[2]);
-        const degImbVal = calculateImbalance(degVals[0], degVals[1], degVals[2]);
-        const cz = getImbalanceCellData(zImbVal);
-        const cd = getImbalanceCellData(degImbVal);
-        doc.rect(40, iy, W, 12).fill('#F1F5F9');
-        doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text('% Imbalance', 44, iy + 2.5, { width: impCols[0] - 8, align: 'left' });
-        doc.rect(40 + impCols[0], iy, impCols[1], 12).fill(cz.bg);
-        doc.fillColor(cz.text).fontSize(7).font('Helvetica-Bold').text(cz.display, 40 + impCols[0], iy + 2.5, { width: impCols[1], align: 'center' });
-        doc.rect(40 + impCols[0] + impCols[1], iy, impCols[2], 12).fill(cd.bg);
-        doc.fillColor(cd.text).fontSize(7).font('Helvetica-Bold').text(cd.display, 40 + impCols[0] + impCols[1], iy + 2.5, { width: impCols[2], align: 'center' });
-        iy += 12;
-      }
+      // % Imbalance row (Z per frequency)
+      doc.rect(40, iy, W, 13).fill('#F1F5F9');
+      doc.fillColor(BLUE).fontSize(7).font('Helvetica-Bold').text('% Imbalance (Z)', 44, iy + 3, { width: labelCol - 8, align: 'left' });
+      Z_FREQS_PDF.forEach((f, fi) => {
+        const fx = 40 + labelCol + fi * freqColW;
+        const v12 = mulData[`${groupPrefix}_imp_1-2_${f}_z`]?.value;
+        const v13 = mulData[`${groupPrefix}_imp_1-3_${f}_z`]?.value;
+        const v23 = mulData[`${groupPrefix}_imp_2-3_${f}_z`]?.value;
+        const imb = calculateImbalance(v12, v13, v23);
+        const cell = getImbalanceCellData(imb);
+        doc.rect(fx, iy, freqColW, 13).fill(cell.bg);
+        doc.fillColor(cell.text).fontSize(7).font('Helvetica-Bold').text(cell.display, fx, iy + 3, { width: freqColW, align: 'center' });
+      });
+      iy += 13;
 
       doc.y = iy + 10;
     }
@@ -3199,12 +3238,31 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
   // Build the impedance-polar dataset for a group. Match the app's rule: include
   // any phase that has a valid Z (magnitude); if the angle is missing, default
   // it to 0° so the vector still renders (see ReportScreen.jsx polarData build).
+  const getImpZRaw = (group, p) => {
+    const spot = mulData[`${group}_imp_${p}_z`];
+    if (spot?.value !== undefined && spot?.value !== null && spot?.value !== '') return spot?.value;
+    for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+      const v = mulData[`${group}_imp_${p}_${f}_z`]?.value;
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return undefined;
+  };
+  const getImpDegRaw = (group, p) => {
+    const spot = mulData[`${group}_imp_${p}_deg`];
+    if (spot?.value !== undefined && spot?.value !== null && spot?.value !== '') return spot?.value;
+    for (const f of ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz']) {
+      const v = mulData[`${group}_imp_${p}_${f}_deg`]?.value;
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return undefined;
+  };
+
   const buildImpPolarData = (group) => {
     const phases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
     const out = [];
     phases.forEach(p => {
-      const zRaw = mulData[`${group}_imp_${p}_z`]?.value;
-      const degRaw = mulData[`${group}_imp_${p}_deg`]?.value;
+      const zRaw = getImpZRaw(group, p);
+      const degRaw = getImpDegRaw(group, p);
       const z = parseFloat(zRaw);
       if (zRaw === undefined || zRaw === null || !isFinite(z)) return;
       const degNum = parseFloat(degRaw);
@@ -3222,6 +3280,10 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
   const rotorPolarData  = buildImpPolarData('rotor');
   const hasStatorPolar  = statorPolarData.length > 0;
   const hasRotorPolar   = rotorPolarData.length > 0;
+  const IMP_PHASES = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+  const SWEEP_FREQS = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+  const hasStatorZSweep = IMP_PHASES.some(p => SWEEP_FREQS.some(f => mulData[`stator_imp_${p}_${f}_z`]?.value !== undefined));
+  const hasRotorZSweep  = IMP_PHASES.some(p => SWEEP_FREQS.some(f => mulData[`rotor_imp_${p}_${f}_z`]?.value !== undefined));
 
   const PHASE_COLORS = {
     '1-2': '#E11D48', '1-3': '#10B981', '2-3': '#D97706',
@@ -3236,61 +3298,102 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     doc.y = y + 22;
   };
 
-  // Draws the impedance polar plot inside a bordered card, centered, with a
-  // phase-color legend row underneath.
-  const drawPolarSection = (cardTitle, impData) => {
-    const cardW = W;
-    const size = 260;
-    const legendH = 14;
-    const padTop = 24;   // room for card title
-    const padBot = 10;
-    const cardH = padTop + size + legendH + padBot;
-
-    if (doc.y + cardH > doc.page.height - 40) {
-      doc.addPage();
-      drawHeader('WINDING FREQUENCY RESPONSE');
-    }
-
-    const cardTop = doc.y;
-    doc.rect(40, cardTop, cardW, cardH).fill('#F8FAFC');
-    doc.strokeColor('#E2E8F0').lineWidth(0.75).rect(40, cardTop, cardW, cardH).stroke();
-
-    doc.fillColor(BLUE).fontSize(10).font('Helvetica-Bold')
-      .text(cardTitle, 40, cardTop + 6, { width: cardW, align: 'center' });
-
-    const chartX = 40 + (cardW - size) / 2;
-    const chartY = cardTop + padTop;
-    drawPDFPolarGraph(doc, 'Impedance Polar Plot', chartX, chartY, size, impData);
-
-    // Legend row centered under the plot
-    const phases = impData.map(d => d.phase);
-    const legendItemW = 60;
-    const legendW = phases.length * legendItemW;
-    let lx = 40 + (cardW - legendW) / 2;
-    const ly = chartY + size + 2;
-    phases.forEach(p => {
-      const color = PHASE_COLORS[p] || '#64748B';
-      doc.strokeColor(color).lineWidth(2).moveTo(lx, ly + 5).lineTo(lx + 14, ly + 5).stroke();
-      doc.fillColor('#334155').fontSize(8).font('Helvetica-Bold').text(p, lx + 18, ly + 2);
-      lx += legendItemW;
-    });
-
-    doc.y = cardTop + cardH + 8;
-  };
-
-  if (hasStatorSweep || hasRotorSweep || hasStatorResSweep || hasRotorResSweep || hasStatorPolar || hasRotorPolar) {
+  if (hasStatorSweep || hasRotorSweep || hasStatorResSweep || hasRotorResSweep || hasStatorPolar || hasRotorPolar || hasStatorZSweep || hasRotorZSweep) {
     doc.addPage();
     drawHeader('WINDING FREQUENCY RESPONSE');
 
-    // Section 1 — Impedance Polar Plots (rendered first, matches app layout)
-    if (hasStatorPolar || (includeRotor && hasRotorPolar)) {
-      drawSectionTitle('Impedance Polar Plots');
-      if (hasStatorPolar) {
-        drawPolarSection('Stator Impedance Polar Plot', statorPolarData);
+    // Section 1 — Impedance Z Sweep + Polar side by side (matches app layout)
+    const drawZSweepAndPolar = (group, label, polarData, hasZSweep) => {
+      if (!hasZSweep && polarData.length === 0) return;
+
+      drawSectionTitle(`${label} Impedance Z Sweep & Polar Plot`);
+
+      const gap = W * 0.03;
+      const half = (W - gap) / 2;
+      const chartH = 160;        // chart area height
+      const titleH = 12;         // external title above chart
+      const imbH = 14;           // imbalance status line below chart
+      const polarTitleH = 16;    // polar card internal title
+      const polarLegendH = 14;   // polar legend row below graph
+      // polar graph size must fit inside polar card minus title and legend
+      const polarSize = chartH - polarLegendH - 4;
+      const blockH = titleH + chartH + imbH + 10; // total block height
+
+      if (doc.y + blockH > doc.page.height - 40) {
+        doc.addPage();
+        drawHeader('WINDING FREQUENCY RESPONSE');
       }
-      if (includeRotor && hasRotorPolar) {
-        drawPolarSection('Rotor Impedance Polar Plot', rotorPolarData);
+
+      const y0 = doc.y;
+
+      // Left: Z sweep chart
+      if (hasZSweep) {
+        // Remap keys to pattern drawPDFMultiLineChart expects: ${group}_${type}_${phase}_${f}
+        const zFakeData = {};
+        IMP_PHASES.forEach(p => {
+          SWEEP_FREQS.forEach(f => {
+            const v = mulData[`${group}_imp_${p}_${f}_z`]?.value;
+            if (v !== undefined && v !== null) {
+              zFakeData[`${group}_imp_z_${p}_${f}`] = { value: v };
+            }
+          });
+        });
+        doc.fontSize(9).font('Helvetica-Bold').fillColor(BLUE)
+          .text(`${label} Impedance Z Sweep (Ω)`, 40, y0, { width: half });
+        drawPDFMultiLineChart(doc, '', 40, y0 + titleH, half, chartH, zFakeData, group, 'imp_z', 'Frequency', 'Impedance Z (Ω)', false);
+
+        // Z imbalance status line
+        let zMaxImb = 0;
+        let hasZImb = false;
+        SWEEP_FREQS.forEach(f => {
+          const v12 = mulData[`${group}_imp_1-2_${f}_z`]?.value;
+          const v13 = mulData[`${group}_imp_1-3_${f}_z`]?.value;
+          const v23 = mulData[`${group}_imp_2-3_${f}_z`]?.value;
+          const imb = calculateImbalance(v12, v13, v23);
+          if (imb !== null) { hasZImb = true; if (imb > zMaxImb) zMaxImb = imb; }
+        });
+        if (hasZImb) {
+          const statusStr = zMaxImb < 5.0 ? 'Normal / Good' : 'Investigate (High Imbalance)';
+          doc.fillColor(zMaxImb < 5.0 ? '#16A34A' : '#DC2626').fontSize(7).font('Helvetica-Bold')
+            .text(`Max Imbalance: ${zMaxImb.toFixed(2)}%  |  Condition Status: ${statusStr}`,
+              40, y0 + titleH + chartH + 3, { width: half });
+        }
       }
+
+      // Right: Polar plot card
+      if (polarData.length > 0) {
+        const polarX = 40 + (hasZSweep ? half + gap : 0);
+        const polarW = hasZSweep ? half : W;
+        const cardH = blockH - imbH;
+        doc.rect(polarX, y0, polarW, cardH).fill('#F8FAFC');
+        doc.strokeColor('#E2E8F0').lineWidth(0.75).rect(polarX, y0, polarW, cardH).stroke();
+        doc.fillColor(BLUE).fontSize(8).font('Helvetica-Bold')
+          .text(`${label} Impedance Polar Plot`, polarX, y0 + 4, { width: polarW, align: 'center' });
+        const graphSize = Math.min(polarSize, polarW - 20);
+        const graphX = polarX + (polarW - graphSize) / 2;
+        drawPDFPolarGraph(doc, '', graphX, y0 + polarTitleH, graphSize, polarData);
+
+        // Polar legend row
+        const phases = polarData.map(d => d.phase);
+        const legendItemW = Math.min(46, (polarW - 8) / phases.length);
+        let lx = polarX + (polarW - phases.length * legendItemW) / 2;
+        const ly = y0 + polarTitleH + graphSize + 2;
+        phases.forEach(p => {
+          const color = PHASE_COLORS[p] || '#64748B';
+          doc.strokeColor(color).lineWidth(2).moveTo(lx, ly + 5).lineTo(lx + 10, ly + 5).stroke();
+          doc.fillColor('#334155').fontSize(6.5).font('Helvetica-Bold').text(p, lx + 12, ly + 2);
+          lx += legendItemW;
+        });
+      }
+
+      doc.y = y0 + blockH + 8;
+    };
+
+    if (hasStatorZSweep || hasStatorPolar) {
+      drawZSweepAndPolar('stator', 'Stator', statorPolarData, hasStatorZSweep);
+    }
+    if (includeRotor && (hasRotorZSweep || hasRotorPolar)) {
+      drawZSweepAndPolar('rotor', 'Rotor', rotorPolarData, hasRotorZSweep);
     }
 
     // Section 2 — Winding Frequency Response (Inductance + AC Resistance sweeps)

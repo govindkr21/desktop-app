@@ -207,10 +207,6 @@ function MeasGroup({
             return (
               <span
                 key={f}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFreqTabClick && onFreqTabClick(f);
-                }}
                 style={{
                   flex: 1,
                   fontSize: 9,
@@ -221,11 +217,9 @@ function MeasGroup({
                   borderRadius: 4,
                   padding: '2px 0',
                   textAlign: 'center',
-                  cursor: 'pointer',
                   userSelect: 'none',
                   transition: 'all 0.15s ease-in-out',
                 }}
-                title={`Click to configure multimeter frequency to ${f}`}
               >
                 {f}
               </span>
@@ -242,10 +236,6 @@ function MeasGroup({
             return (
               <span
                 key={f}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFreqTabClick && onFreqTabClick(f);
-                }}
                 style={{
                   flex: 1,
                   fontSize: 9,
@@ -256,11 +246,9 @@ function MeasGroup({
                   borderRadius: 4,
                   padding: '2px 0',
                   textAlign: 'center',
-                  cursor: 'pointer',
                   userSelect: 'none',
                   transition: 'all 0.15s ease-in-out',
                 }}
-                title={`Click to configure multimeter frequency to ${f}`}
               >
                 {f}
               </span>
@@ -277,10 +265,6 @@ function MeasGroup({
             return (
               <span
                 key={f}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFreqTabClick && onFreqTabClick(f);
-                }}
                 style={{
                   flex: 1,
                   fontSize: 9,
@@ -291,11 +275,9 @@ function MeasGroup({
                   borderRadius: 4,
                   padding: '2px 0',
                   textAlign: 'center',
-                  cursor: 'pointer',
                   userSelect: 'none',
                   transition: 'all 0.15s ease-in-out',
                 }}
-                title={`Click to configure multimeter frequency to ${f}`}
               >
                 {f}
               </span>
@@ -984,7 +966,16 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
     setTelemetryAlert(false);
 
     if (demoMode) {
-      const base = mode === 'R' ? 12.4 : mode === 'L' ? 145.2 : 47.8;
+      let base;
+      if (mode === 'R') {
+        base = freq === '100Hz' ? 12.41 : freq === '120Hz' ? 12.43 : freq === '1kHz' ? 12.48 : freq === '10kHz' ? 12.89 : 14.21;
+      } else if (mode === 'L') {
+        base = freq === '100Hz' ? 145.2 : freq === '120Hz' ? 144.8 : freq === '1kHz' ? 142.1 : freq === '10kHz' ? 138.5 : 132.0;
+      } else if (mode === 'Z') {
+        base = freq === '100Hz' ? 15.12 : freq === '120Hz' ? 15.25 : freq === '1kHz' ? 15.80 : freq === '10kHz' ? 18.40 : 26.10;
+      } else {
+        base = 12.4;
+      }
       liveRef.current = setInterval(() => {
         const noise = (Math.random() - 0.5) * base * 0.05;
         const val = parseFloat((base + noise).toFixed(3));
@@ -1023,7 +1014,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
         api.removeAllListeners('multimeter:live');
       }
     };
-  }, [mode, demoMode, multimeterOnline]);
+  }, [mode, freq, demoMode, multimeterOnline]);
 
   const confirmReTest = () => {
     if (hadDataOnLoad.current && !hasConfirmedReTest.current) {
@@ -1245,14 +1236,15 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
       newMode = 'Z';
     }
 
-    if (newMode !== mode) {
-      setMode(newMode);
-      if (sweepingField === null && !demoMode && api.sendMultimeterCommand) {
-        try {
-          await api.sendMultimeterCommand(newMode, freq, secondary, equivalent);
-        } catch (err) {
-          console.error('Failed to configure multimeter mode on group click:', err);
-        }
+    const modeChanged = newMode !== mode;
+    if (modeChanged) setMode(newMode);
+    setFreq('100Hz');
+
+    if (sweepingField === null && !demoMode && api.sendMultimeterCommand) {
+      try {
+        await api.sendMultimeterCommand(newMode, '100Hz', secondary, equivalent);
+      } catch (err) {
+        console.error('Failed to configure multimeter mode on group click:', err);
       }
     }
   };
@@ -1270,7 +1262,7 @@ export default function MultimeterTab({ record, demoMode = true, multimeterStatu
 
   const handleFreqTabClick = async (f) => {
     // Preserve current mode — only switch to 'L' if we're not already in a sweep mode
-    const newMode = (mode === 'R' || mode === 'L') ? mode : 'L';
+    const newMode = (mode === 'R' || mode === 'L' || mode === 'Z' || mode === 'C') ? mode : 'L';
     setFreq(f);
     setMode(newMode);
     if (!demoMode && api.sendMultimeterCommand) {
