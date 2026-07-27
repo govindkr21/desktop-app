@@ -118,7 +118,7 @@ function formatResistance(mOhms) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-export default function InsulationTab({ record, demoMode = true, meggerStatus, onChange, onCaptureChange, visible = true }) {
+export default function InsulationTab({ record, demoMode = false, meggerStatus, onChange, onCaptureChange, visible = true }) {
   const correctInsulationTo40 = record?.correctInsulationTo40 || false;
 
   // ─── Core state ────────────────────────────────────────────────────────────
@@ -447,30 +447,33 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
     isCapturingRef.current = true;
     meggerTimeOriginRef.current = null;
 
-    if (demoMode) {
-      const captureStartTime = Date.now();
-      simRef.current = setInterval(async () => {
-        const t = Math.round((Date.now() - captureStartTime) / 1000);
-        const target = activeCaptureTargetRef.current;
-        if (!target) return;
-        const isRamp = target.tab === 'RAMP';
-        const vBase  = isRamp ? Math.min(5000, 100 + t * 5) : 500;
-        const durationLimit = TEST_DURATIONS[target.tab];
-        const row = {
-          time: durationLimit && t >= durationLimit ? durationLimit : t,
-          voltage: vBase,
-          actualVoltage: vBase + Math.round(Math.random() * 8 - 4),
-          current: parseFloat((0.05 + Math.random() * 0.12).toFixed(3)),
-          resistance: Math.round(3500 + Math.random() * 4500),
-        };
-        await saveRow(target.tab, target.tableId, row, target.record);
-        if (durationLimit && t >= durationLimit) {
-          stopCapture();
-          setStatus('✅ Test Completed');
-          handleTestCompletion(target.tab, target.tableId, durationLimit, 'TIMEOUT');
-        }
-      }, 1200);
-    } else {
+    // ── DEMO CAPTURE DISABLED (kept for reference) ──────────────────
+    // if (demoMode) {
+    //   const captureStartTime = Date.now();
+    //   simRef.current = setInterval(async () => {
+    //     const t = Math.round((Date.now() - captureStartTime) / 1000);
+    //     const target = activeCaptureTargetRef.current;
+    //     if (!target) return;
+    //     const isRamp = target.tab === 'RAMP';
+    //     const vBase  = isRamp ? Math.min(5000, 100 + t * 5) : 500;
+    //     const durationLimit = TEST_DURATIONS[target.tab];
+    //     const row = {
+    //       time: durationLimit && t >= durationLimit ? durationLimit : t,
+    //       voltage: vBase,
+    //       actualVoltage: vBase + Math.round(Math.random() * 8 - 4),
+    //       current: parseFloat((0.05 + Math.random() * 0.12).toFixed(3)),
+    //       resistance: Math.round(3500 + Math.random() * 4500),
+    //     };
+    //     await saveRow(target.tab, target.tableId, row, target.record);
+    //     if (durationLimit && t >= durationLimit) {
+    //       stopCapture();
+    //       setStatus('✅ Test Completed');
+    //       handleTestCompletion(target.tab, target.tableId, durationLimit, 'TIMEOUT');
+    //     }
+    //   }, 1200);
+    // } else {
+    // ── end demo capture ──
+    {
       api.removeAllListeners('megger:data');
       api.removeAllListeners('megger:stopped');
       alertIntervalRef.current = setInterval(() => {
@@ -745,10 +748,10 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
             <button key={t} style={subBtn(activeTab === t)} onClick={() => setActiveTab(t)}>{t} Test</button>
           ))}
           {/* Device status badge */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: demoMode ? 'rgba(234,179,8,0.08)' : meggerOnline ? '#ecfdf5' : '#fef2f2', border: `1px solid ${demoMode ? '#ca8a04' : meggerOnline ? '#a7f3d0' : '#fca5a5'}`, borderRadius: 20, padding: '3px 10px', marginLeft: 8 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: demoMode ? '#eab308' : meggerOnline ? '#10b981' : '#ef4444', display: 'inline-block' }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: demoMode ? '#854d0e' : meggerOnline ? '#065f46' : '#991b1b' }}>
-              {demoMode ? '🎭 Demo Mode' : meggerOnline ? '✅ Megger Online' : '⚠️ Megger Offline'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: meggerOnline ? '#ecfdf5' : '#fef2f2', border: `1px solid ${meggerOnline ? '#a7f3d0' : '#fca5a5'}`, borderRadius: 20, padding: '3px 10px', marginLeft: 8 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: meggerOnline ? '#10b981' : '#ef4444', display: 'inline-block' }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: meggerOnline ? '#065f46' : '#991b1b' }}>
+              {meggerOnline ? '✅ Megger Online' : '⚠️ Megger Offline'}
             </span>
           </div>
           {/* Correction toggle */}
@@ -761,8 +764,8 @@ export default function InsulationTab({ record, demoMode = true, meggerStatus, o
           {status && <span style={{ fontSize: 12, color: '#16a34a', fontWeight: 600 }}>{status}</span>}
           <button
             onClick={startCapture}
-            disabled={!demoMode && !meggerOnline && !isCapturing}
-            style={{ borderRadius: 8, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none', background: isCapturing ? '#dc2626' : '#16a34a', color: '#fff', transition: 'background 0.15s', opacity: (!demoMode && !meggerOnline && !isCapturing) ? 0.4 : 1 }}
+            disabled={!meggerOnline && !isCapturing}
+            style={{ borderRadius: 8, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none', background: isCapturing ? '#dc2626' : '#16a34a', color: '#fff', transition: 'background 0.15s', opacity: (!meggerOnline && !isCapturing) ? 0.4 : 1 }}
           >
             {isCapturing ? '⏹ Stop' : '▶ Start Capture'}
           </button>

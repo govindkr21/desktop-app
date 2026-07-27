@@ -723,10 +723,10 @@ export default function ReportScreen({ record, onChange }) {
     try {
       let result;
       if (type === 'Excel') {
-        // Grab sweep chart images
+        // Grab sweep chart images (L, R, Z per group)
         const sweepImages = {};
         const sweepGroups = ['stator', 'rotor'];
-        const sweepTypes = ['ind', 'res'];
+        const sweepTypes = ['ind', 'res', 'imp'];
         for (const group of sweepGroups) {
           for (const type of sweepTypes) {
             const base64 = await grabChartBase64(`chart-${group}-${type}`);
@@ -882,37 +882,74 @@ export default function ReportScreen({ record, onChange }) {
   const hasLRotorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`rotor_ind_${p}_${f}`]?.value !== undefined));
   const hasRStatorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`stator_res_${p}_${f}`]?.value !== undefined));
   const hasRRotorSweep = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p => ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`rotor_res_${p}_${f}`]?.value !== undefined));
+  // Consider a group's Z chart "plottable" if any per-freq bucket is populated OR
+  // any spot Z value exists (it can be back-filled into its stored frequency column).
+  const hasAnyZ = (group) => ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'].some(p =>
+    ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'].some(f => mulData[`${group}_imp_${p}_${f}_z`]?.value !== undefined)
+    || mulData[`${group}_imp_${p}_z`]?.value !== undefined
+  );
+  const hasZStatorSweep = hasAnyZ('stator');
+  const hasZRotorSweep  = hasAnyZ('rotor');
 
   const renderSweepTable = (title, group, type) => {
     const tablePhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
     const tableFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
-    
+    // Z sweep stores magnitude in `..._z` and phase angle in `..._deg`. Line chart plots Z only.
+    const keyFor = (phase, f) => type === 'imp'
+      ? `${group}_imp_${phase}_${f}_z`
+      : `${group}_${type}_${phase}_${f}`;
+
+    // Sweep cell fallback: if the per-freq bucket is empty, borrow the spot value
+    // when its captured frequency matches the column. Keeps Z charts populated even
+    // when the user only captured spot Z at the group's default frequency.
+    const readSweep = (phase, f) => {
+      const cell = mulData[keyFor(phase, f)];
+      if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
+      const spotKey = type === 'imp'
+        ? `${group}_imp_${phase}_z`
+        : `${group}_${type}_${phase}`;
+      const spot = mulData[spotKey];
+      if (spot && spot.frequency === f && spot.value !== undefined && spot.value !== null && spot.value !== '') {
+        return spot;
+      }
+      return cell;
+    };
+
     const hasData = tablePhases.some(phase =>
-      tableFreqs.some(f => mulData[`${group}_${type}_${phase}_${f}`]?.value !== undefined)
+      tableFreqs.some(f => readSweep(phase, f)?.value !== undefined && readSweep(phase, f)?.value !== null && readSweep(phase, f)?.value !== '')
     );
     if (!hasData) return null;
 
     const colImbalances = {};
     let maxImbalance = 0;
-    
+    let hasAnyImbalance = false;
+    // Detect which inter-phase pairs are populated so we can call out the
+    // missing ones when imbalance can't be computed.
+    const seenPhases = new Set();
+
     tableFreqs.forEach(f => {
-      const v12 = mulData[`${group}_${type}_1-2_${f}`]?.value;
-      const v13 = mulData[`${group}_${type}_1-3_${f}`]?.value;
-      const v23 = mulData[`${group}_${type}_2-3_${f}`]?.value;
-      
+      const v12 = readSweep('1-2', f)?.value;
+      const v13 = readSweep('1-3', f)?.value;
+      const v23 = readSweep('2-3', f)?.value;
+      if (v12 !== undefined && v12 !== null && v12 !== '') seenPhases.add('1-2');
+      if (v13 !== undefined && v13 !== null && v13 !== '') seenPhases.add('1-3');
+      if (v23 !== undefined && v23 !== null && v23 !== '') seenPhases.add('2-3');
+
       const imb = calculateImbalance(v12, v13, v23);
       if (imb !== null) {
+        hasAnyImbalance = true;
         colImbalances[f] = imb;
         if (imb > maxImbalance) {
           maxImbalance = imb;
         }
       }
     });
+    const missingPhases = ['1-2', '1-3', '2-3'].filter(p => !seenPhases.has(p));
 
     const chartData = tableFreqs.map(f => {
       const obj = { name: f };
       tablePhases.forEach(phase => {
-        const cellData = mulData[`${group}_${type}_${phase}_${f}`];
+        const cellData = readSweep(phase, f);
         if (cellData && cellData.value !== undefined && cellData.value !== null && cellData.value !== '') {
           // DB values come back as strings — coerce so numeric ops (min/max, padding) don't concat.
           let val = parseFloat(cellData.value);
@@ -1029,11 +1066,26 @@ export default function ReportScreen({ record, onChange }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-          {maxImbalance > 0 && (
-            <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: maxImbalance < 5 ? '#16a34a' : '#dc2626' }}>
-              Max Imbalance: {maxImbalance.toFixed(2)}% | Condition Status: {maxImbalance < 5 ? 'Normal / Good' : 'Investigate (High Imbalance)'}
-            </div>
-          )}
+          {(() => {
+            // Always render a status line so users can see at a glance whether
+            // imbalance is good, high, or uncomputable due to missing phases.
+            if (hasAnyImbalance) {
+              const good = maxImbalance < 5;
+              return (
+                <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: good ? '#16a34a' : '#dc2626' }}>
+                  Max Imbalance: {maxImbalance.toFixed(2)}% | Condition Status: {good ? 'Normal / Good' : 'Investigate (High Imbalance)'}
+                </div>
+              );
+            }
+            const missingLabel = missingPhases.length
+              ? `Insufficient data — capture Phase ${missingPhases.map(p => p).join(', ')} to compute`
+              : 'Insufficient data to compute imbalance';
+            return (
+              <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: '#64748b' }}>
+                Max Imbalance: — | Condition Status: {missingLabel}
+              </div>
+            );
+          })()}
         </div>
       </div>
     );
@@ -2087,7 +2139,7 @@ export default function ReportScreen({ record, onChange }) {
                       <div style={{ marginTop: 16 }}>
                         {hasGroupImp && (
                           <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 6px 0' }}>
-                            🌀 {group === 'stator' ? 'Stator' : 'Rotor'} Winding Impedance (Z & Phase Angle){impHeaderSuffix}
+                            🌀 {group === 'stator' ? 'Stator' : 'Rotor'} Winding Impedance (Z & Phase Angle) — split frequency
                           </h5>
                         )}
                         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -2139,73 +2191,97 @@ export default function ReportScreen({ record, onChange }) {
                               </table>
                             </div>
                           )}
-                          {hasGroupImp && (
-                            <div style={{ flex: 1.2, overflowX: 'auto' }}>
-                              <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance{impHeaderSuffix}</h6>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1' }}>
-                                <thead>
-                                  <tr style={{ background: '#1e40af', color: '#fff' }}>
-                                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Phase Line</th>
-                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Impedance Z (Ω)</th>
-                                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Phase Angle (°)</th>
-                                    {showImpFreqColumn && (
-                                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Frequency</th>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {impPhases.map((phase, pIdx) => {
-                                    const zCell = mulData[`${group}_imp_${phase}_z`];
-                                    const dCell = mulData[`${group}_imp_${phase}_deg`];
-                                    const zVal = zCell?.value;
-                                    const degVal = dCell?.value;
-                                    const rowFreq = zCell?.frequency || dCell?.frequency || impFreq || '—';
-                                    return (
+                          {hasGroupImp && (() => {
+                            // Split-frequency Impedance table — mirrors the L/R sweep style.
+                            // Each cell stacks Z magnitude on top and phase angle θ underneath.
+                            // Populated from sweep buckets (`_${freq}_z`/`_deg`), with a fallback
+                            // to the spot value when its stored frequency matches the column.
+                            const impSweepFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+                            const readImpCell = (phase, f) => {
+                              const zSweep = mulData[`${group}_imp_${phase}_${f}_z`]?.value;
+                              const dSweep = mulData[`${group}_imp_${phase}_${f}_deg`]?.value;
+                              let z = zSweep, d = dSweep;
+                              if (z === undefined || z === null || z === '') {
+                                const spot = mulData[`${group}_imp_${phase}_z`];
+                                if (spot?.frequency === f) z = spot?.value;
+                              }
+                              if (d === undefined || d === null || d === '') {
+                                const spotD = mulData[`${group}_imp_${phase}_deg`];
+                                if (spotD?.frequency === f) d = spotD?.value;
+                              }
+                              return { z, d };
+                            };
+                            const imbCell = (imb) => {
+                              if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
+                              const display = `${imb.toFixed(2)}%`;
+                              if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
+                              if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
+                              return { bg: '#d1fae5', text: '#065f46', display };
+                            };
+                            return (
+                              <div style={{ flex: 1.2, overflowX: 'auto' }}>
+                                <h6 style={{ fontSize: 10, fontWeight: 700, color: '#475569', margin: '0 0 6px 0' }}>Impedance Z (Ω) &amp; Phase Angle θ (°)</h6>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, background: '#fff', border: '1px solid #cbd5e1', tableLayout: 'auto' }}>
+                                  <thead>
+                                    <tr style={{ background: '#1e40af', color: '#fff' }}>
+                                      <th style={{ padding: '4px 6px', textAlign: 'left', whiteSpace: 'nowrap' }}>Phase Line</th>
+                                      {impSweepFreqs.map(f => (
+                                        <th key={f} style={{ padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }}>{f}</th>
+                                      ))}
+                                    </tr>
+                                    <tr style={{ background: '#1e40af', color: '#c7d2fe' }}>
+                                      <th style={{ padding: '2px 6px', textAlign: 'left', fontSize: 8, fontWeight: 600 }}>&nbsp;</th>
+                                      {impSweepFreqs.map(f => (
+                                        <th key={f} style={{ padding: '2px 6px', textAlign: 'center', fontSize: 8, fontWeight: 600, whiteSpace: 'nowrap' }}>Z (Ω) / θ (°)</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {impPhases.map((phase, pIdx) => (
                                       <tr key={phase} style={{ borderBottom: '1px solid #e2e8f0', background: pIdx % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                                        <td style={{ padding: '5px 8px', fontWeight: 700 }}>Phase {phase}</td>
-                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                          {isOverload(zVal, 'Z') ? 'O.L' : (zVal !== undefined ? zVal : '—')}
-                                        </td>
-                                        <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                          {degVal !== undefined ? degVal : '—'}
-                                        </td>
-                                        {showImpFreqColumn && (
-                                          <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'monospace' }}>
-                                            {(rowFreq && rowFreq !== 'undefined' && rowFreq !== 'null') ? rowFreq : '—'}
-                                          </td>
-                                        )}
+                                        <td style={{ padding: '4px 6px', fontWeight: 700, whiteSpace: 'nowrap' }}>Phase {phase}</td>
+                                        {impSweepFreqs.map(f => {
+                                          const { z, d } = readImpCell(phase, f);
+                                          const hasZ = z !== undefined && z !== null && z !== '';
+                                          const hasD = d !== undefined && d !== null && d !== '';
+                                          const zStr = hasZ ? (isOverload(z, 'Z') ? 'O.L' : String(z)) : '—';
+                                          const dStr = hasD ? String(d) : '—';
+                                          return (
+                                            <td key={f} style={{ padding: '3px 6px', textAlign: 'center', fontFamily: 'monospace', lineHeight: 1.25 }}>
+                                              <div>{zStr}</div>
+                                              <div style={{ color: '#64748b', fontSize: 9 }}>{dStr}</div>
+                                            </td>
+                                          );
+                                        })}
                                       </tr>
-                                    );
-                                  })}
-                                  {(() => {
-                                    const imbCell = (imb) => {
-                                      if (imb === null || imb === undefined) return { bg: '#fff', text: '#64748b', display: '—' };
-                                      const display = `${imb.toFixed(2)}%`;
-                                      if (imb >= 5) return { bg: '#fee2e2', text: '#991b1b', display };
-                                      if (imb >= 2) return { bg: '#fef3c7', text: '#92400e', display };
-                                      return { bg: '#d1fae5', text: '#065f46', display };
-                                    };
-                                    const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
-                                    const degVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_deg`]?.value);
-                                    const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
-                                    const degImb = calculateImbalance(degVals[0], degVals[1], degVals[2]);
-                                    const cz = imbCell(zImb);
-                                    const cd = imbCell(degImb);
-                                    return (
-                                      <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
-                                        <td style={{ padding: '6px 8px', color: '#1e3a8a' }}>% Imbalance</td>
-                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cz.bg, color: cz.text, fontFamily: 'monospace' }}>{cz.display}</td>
-                                        <td style={{ padding: '6px 8px', textAlign: 'right', background: cd.bg, color: cd.text, fontFamily: 'monospace' }}>{cd.display}</td>
-                                        {showImpFreqColumn && (
-                                          <td style={{ padding: '6px 8px' }}>&nbsp;</td>
-                                        )}
-                                      </tr>
-                                    );
-                                  })()}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
+                                    ))}
+                                    {(() => {
+                                      // Per-frequency imbalance — Z on top row, θ on bottom row of each column.
+                                      const perFreq = impSweepFreqs.map(f => {
+                                        const zVals = ['1-2', '1-3', '2-3'].map(p => readImpCell(p, f).z);
+                                        const dVals = ['1-2', '1-3', '2-3'].map(p => readImpCell(p, f).d);
+                                        return {
+                                          z: imbCell(calculateImbalance(zVals[0], zVals[1], zVals[2])),
+                                          d: imbCell(calculateImbalance(dVals[0], dVals[1], dVals[2])),
+                                        };
+                                      });
+                                      return (
+                                        <tr style={{ borderTop: '2px solid #cbd5e1', background: '#f1f5f9', fontWeight: 'bold' }}>
+                                          <td style={{ padding: '6px 6px', color: '#1e3a8a', whiteSpace: 'nowrap' }}>% Imbalance</td>
+                                          {perFreq.map((c, i) => (
+                                            <td key={i} style={{ padding: '4px 6px', textAlign: 'center', fontFamily: 'monospace', lineHeight: 1.2 }}>
+                                              <div style={{ background: c.z.bg, color: c.z.text, padding: '1px 4px', borderRadius: 3 }}>{c.z.display}</div>
+                                              <div style={{ background: c.d.bg, color: c.d.text, padding: '1px 4px', borderRadius: 3, marginTop: 2, fontSize: 9 }}>{c.d.display}</div>
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      );
+                                    })()}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
@@ -2267,7 +2343,7 @@ export default function ReportScreen({ record, onChange }) {
               </div>
             )}
 
-            {/* Impedance Polar Plots — col-md-6 each, before sweep charts */}
+            {/* Impedance Polar Plots — polar (left) + Z-vs-frequency sweep chart (right) per group */}
             {(() => {
               const impPhases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
               const buildPolarData = (group) => {
@@ -2287,23 +2363,70 @@ export default function ReportScreen({ record, onChange }) {
               };
               const statorPolar = buildPolarData('stator');
               const rotorPolar = includeRotor ? buildPolarData('rotor') : [];
-              if (statorPolar.length === 0 && rotorPolar.length === 0) return null;
+              const showStator = statorPolar.length > 0 || hasZStatorSweep;
+              const showRotor = includeRotor && (rotorPolar.length > 0 || hasZRotorSweep);
+              if (!showStator && !showRotor) return null;
+
+              // Wrap the polar card so its outer id matches the chart-capture pattern
+              // used for the L/R sweep charts (chart-<group>-<type>). Includes a
+              // Z imbalance status line under the plot so it mirrors the sweep charts.
+              const polarCard = (group, data, label) => {
+                const zVals = ['1-2', '1-3', '2-3'].map(p => mulData[`${group}_imp_${p}_z`]?.value);
+                const zImb = calculateImbalance(zVals[0], zVals[1], zVals[2]);
+                const seen = ['1-2', '1-3', '2-3'].filter(p => {
+                  const v = mulData[`${group}_imp_${p}_z`]?.value;
+                  return v !== undefined && v !== null && v !== '';
+                });
+                const missing = ['1-2', '1-3', '2-3'].filter(p => !seen.includes(p));
+                let statusEl;
+                if (zImb !== null && zImb !== undefined) {
+                  const good = zImb < 5;
+                  statusEl = (
+                    <div style={{ marginTop: 6, fontSize: 10, fontWeight: 'bold', color: good ? '#16a34a' : '#dc2626' }}>
+                      Max Imbalance: {zImb.toFixed(2)}% | Condition Status: {good ? 'Normal / Good' : 'Investigate (High Imbalance)'}
+                    </div>
+                  );
+                } else {
+                  const label2 = missing.length
+                    ? `Insufficient data — capture Phase ${missing.join(', ')} to compute`
+                    : 'Insufficient data to compute imbalance';
+                  statusEl = (
+                    <div style={{ marginTop: 6, fontSize: 10, fontWeight: 'bold', color: '#64748b' }}>
+                      Max Imbalance: — | Condition Status: {label2}
+                    </div>
+                  );
+                }
+                return (
+                  <div id={`chart-polar-${group}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff', minHeight: 300 }}>
+                    <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>{label}</h5>
+                    {data.length > 0
+                      ? <PolarPlot data={data} size={240} />
+                      : <div style={{ flex: 1, display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>No spot Z data captured</div>}
+                    {statusEl}
+                  </div>
+                );
+              };
+
               return (
                 <div style={{ marginTop: 20 }}>
                   <h4 style={{ fontSize: 12, fontWeight: 700, color: '#1e3a8a', marginBottom: 12, borderBottom: '1px solid #e2e8f0', paddingBottom: 4 }}>
-                    🎯 Impedance Polar Plots
+                    🎯 Impedance Polar & Frequency Sweep
                   </h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
-                    {statorPolar.length > 0 && (
-                      <div id="chart-polar-stator" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
-                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Stator Impedance Polar Plot</h5>
-                        <PolarPlot data={statorPolar} size={220} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {showStator && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                        {polarCard('stator', statorPolar, 'Stator Impedance Polar Plot')}
+                        {hasZStatorSweep
+                          ? renderSweepTable('Stator Impedance Sweep (Ω)', 'stator', 'imp')
+                          : <div style={{ border: '1px dashed #e2e8f0', borderRadius: 8, padding: 12, background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>No Stator Z sweep data</div>}
                       </div>
                     )}
-                    {rotorPolar.length > 0 && (
-                      <div id="chart-polar-rotor" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, background: '#fff' }}>
-                        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 8px 0' }}>Rotor Impedance Polar Plot</h5>
-                        <PolarPlot data={rotorPolar} size={220} />
+                    {showRotor && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
+                        {polarCard('rotor', rotorPolar, 'Rotor Impedance Polar Plot')}
+                        {hasZRotorSweep
+                          ? renderSweepTable('Rotor Impedance Sweep (Ω)', 'rotor', 'imp')
+                          : <div style={{ border: '1px dashed #e2e8f0', borderRadius: 8, padding: 12, background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>No Rotor Z sweep data</div>}
                       </div>
                     )}
                   </div>
