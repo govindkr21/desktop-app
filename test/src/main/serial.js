@@ -527,7 +527,23 @@ function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
     // Changing primary parameter changes physical secondary default; invalidate tracking
     currentMultimeterSec = '';
   }
-  
+
+  // DCR is a DC measurement — the meter rejects FREQ / FUNC:impb / FUNC:EQU
+  // in this mode with E10 (Data type error / parameter out of range for
+  // current function), so short-circuit here after the mode switch.
+  if (modeVal === 'DCR') {
+    if (cmds.length === 0) {
+      console.log('[Multimeter] State already matches requested settings. Skipping commands.');
+      return;
+    }
+    multimeterCommandQueue = [];
+    multimeterCommandQueue.push(...cmds);
+    if (!isProcessingMultimeterQueue) {
+      processNextMultimeterCommand();
+    }
+    return;
+  }
+
   let freqVal = '1000';
   if (frequency) {
     const f = frequency.toLowerCase();
@@ -540,7 +556,7 @@ function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
   if (freqVal !== currentMultimeterFreq) {
     cmds.push(`FREQ ${freqVal}`);
   }
-  
+
   let secVal = 'D';
   if (modeVal === 'R' || modeVal === 'Z') {
     secVal = 'THETA';
@@ -560,7 +576,7 @@ function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
   if (secVal !== currentMultimeterSec) {
     cmds.push(`FUNC:impb ${secVal}`);
   }
-  
+
   let equivVal = 'SER';
   if (equivalent) {
     equivVal = equivalent.toUpperCase() === 'PAL' ? 'PAL' : 'SER';
@@ -568,7 +584,7 @@ function sendMultimeterCommand(mode, frequency, secondary, equivalent) {
   if (equivVal !== currentMultimeterEquiv) {
     cmds.push(`FUNC:EQU ${equivVal}`);
   }
-  
+
   if (cmds.length === 0) {
     console.log('[Multimeter] State already matches requested settings. Skipping commands.');
     return;

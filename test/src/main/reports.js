@@ -508,10 +508,13 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
   const tableFreqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
   const freqIndices = { '100Hz': 0, '120Hz': 1, '1kHz': 2, '10kHz': 3, '100kHz': 4 };
 
-  // Z (impedance) sweep stores magnitude in `..._z`; L/R use the bare freq key.
+  // Z (impedance) sweep stores magnitude in `..._z`; θ (phase angle for the
+  // Bode plot's bottom panel) stores in `..._deg`; L/R use the bare freq key.
   const keyFor = (phase, f) => type === 'imp'
     ? `${group}_imp_${phase}_${f}_z`
-    : `${group}_${type}_${phase}_${f}`;
+    : type === 'imp_deg'
+      ? `${group}_imp_${phase}_${f}_deg`
+      : `${group}_${type}_${phase}_${f}`;
 
   // Spot fallback: when no per-freq bucket, borrow the spot value whose stored
   // frequency matches the column. Matches the app-side sweep-table fallback so
@@ -521,7 +524,9 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
     if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell;
     const spotKey = type === 'imp'
       ? `${group}_imp_${phase}_z`
-      : `${group}_${type}_${phase}`;
+      : type === 'imp_deg'
+        ? `${group}_imp_${phase}_deg`
+        : `${group}_${type}_${phase}`;
     const spot = rawData[spotKey];
     if (spot && spot.frequency === f && spot.value !== undefined && spot.value !== null && spot.value !== '') {
       return spot;
@@ -573,13 +578,27 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
 
   // Get data boundaries — auto-scale with padding so small ranges (e.g. 1.45–4.11 mH)
   // aren't dwarfed by a 0-based axis. When any value dips below 0 (capacitive dominance),
-  // extend the floor further so the yellow band underneath still renders.
+  // extend the floor further so the yellow band underneath still renders. When the
+  // data spans more than 20× (L/R sweeps near self-resonance), fall back to a
+  // log axis so baseline detail stays visible next to the spike.
   const rawMinY = Math.min(...allYValues);
   const rawMaxY = Math.max(...allYValues);
-  const span = rawMaxY - rawMinY;
-  const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(rawMaxY) * 0.1, 0.1);
-  const minY = rawMinY < 0 ? Math.floor(rawMinY - 1) : rawMinY - pad;
-  const maxY = rawMaxY + pad;
+  const useLogY = rawMinY > 0 && (rawMaxY / rawMinY) > 20;
+
+  let minY, maxY;
+  if (useLogY) {
+    const logMin = Math.log10(rawMinY);
+    const logMax = Math.log10(rawMaxY);
+    const logSpan = logMax - logMin;
+    const logPad = Math.max(logSpan * 0.1, 0.05);
+    minY = Math.pow(10, logMin - logPad);
+    maxY = Math.pow(10, logMax + logPad);
+  } else {
+    const span = rawMaxY - rawMinY;
+    const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(rawMaxY) * 0.1, 0.1);
+    minY = rawMinY < 0 ? Math.floor(rawMinY - 1) : rawMinY - pad;
+    maxY = rawMaxY + pad;
+  }
 
   const scaleX = (xIndex) => {
     return plotX + (xIndex / 4) * plotW;
@@ -587,6 +606,14 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
 
   const scaleY = (y) => {
     if (maxY === minY) return plotY + plotH;
+    if (useLogY) {
+      // Guard against non-positive values on a log axis (shouldn't happen given
+      // the useLogY gate, but clamp to the axis floor just in case).
+      const safe = y > 0 ? y : minY;
+      const logMinY = Math.log10(minY);
+      const logMaxY = Math.log10(maxY);
+      return plotY + plotH - ((Math.log10(safe) - logMinY) / (logMaxY - logMinY)) * plotH;
+    }
     return plotY + plotH - ((y - minY) / (maxY - minY)) * plotH;
   };
 
@@ -602,11 +629,19 @@ function drawPDFMultiLineChart(doc, title, startX, startY, width, height, rawDat
     }
   }
 
-  // Draw 5 horizontal grid lines
+  // Draw 5 horizontal grid lines — evenly spaced in linear space, or geometrically
+  // spaced (equal decades) in log space so labels line up with the log axis.
   const gridLines = 5;
   doc.strokeColor('#E2E8F0').lineWidth(0.5);
   for (let i = 0; i <= gridLines; i++) {
-    const yVal = minY + (i / gridLines) * (maxY - minY);
+    let yVal;
+    if (useLogY) {
+      const logMinY = Math.log10(minY);
+      const logMaxY = Math.log10(maxY);
+      yVal = Math.pow(10, logMinY + (i / gridLines) * (logMaxY - logMinY));
+    } else {
+      yVal = minY + (i / gridLines) * (maxY - minY);
+    }
     const py = scaleY(yVal);
 
     doc.moveTo(plotX, py).lineTo(plotX + plotW, py).dash(2, { space: 2 }).stroke();
@@ -3344,6 +3379,70 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     }
   };
 
+  // Bode plot — Z magnitude on the top panel, θ phase angle on the bottom
+  // panel, sharing the frequency x-axis. Renders inside the row's allocated
+  // chartH; the Z panel gets ~55% and θ ~45% of the vertical space.
+  const drawBodePlot = (groupPrefix, chartX, chartY, chartW, chartH) => {
+    const gap = 6;
+    const zH = Math.floor((chartH - gap) * 0.55);
+    const dH = chartH - gap - zH;
+
+    // Z (top)
+    drawPDFMultiLineChart(
+      doc, '',
+      chartX, chartY, chartW, zH,
+      mulData, groupPrefix, 'imp',
+      '', 'Impedance |Z| (Ohms)',
+      record.correctWindingTo20
+    );
+    // θ (bottom)
+    drawPDFMultiLineChart(
+      doc, '',
+      chartX, chartY + zH + gap, chartW, dH,
+      mulData, groupPrefix, 'imp_deg',
+      'Frequency', 'Phase Angle θ (deg)',
+      record.correctWindingTo20
+    );
+
+    // Max Z imbalance status line (uses the same rules as drawSweepChart).
+    const readSpotAware = (phase, f) => {
+      const sweepKey = `${groupPrefix}_imp_${phase}_${f}_z`;
+      const cell = mulData[sweepKey];
+      if (cell?.value !== undefined && cell?.value !== null && cell?.value !== '') return cell.value;
+      const spot = mulData[`${groupPrefix}_imp_${phase}_z`];
+      if (spot && spot.frequency === f && spot.value !== undefined && spot.value !== null && spot.value !== '') {
+        return spot.value;
+      }
+      return undefined;
+    };
+    let maxImb = 0, hasAny = false;
+    const seen = new Set();
+    FREQS_SWEEP.forEach(f => {
+      const v12 = readSpotAware('1-2', f);
+      const v13 = readSpotAware('1-3', f);
+      const v23 = readSpotAware('2-3', f);
+      if (v12 !== undefined && v12 !== null && v12 !== '') seen.add('1-2');
+      if (v13 !== undefined && v13 !== null && v13 !== '') seen.add('1-3');
+      if (v23 !== undefined && v23 !== null && v23 !== '') seen.add('2-3');
+      const imb = calculateImbalance(v12, v13, v23);
+      if (imb !== null) { hasAny = true; if (imb > maxImb) maxImb = imb; }
+    });
+    if (hasAny) {
+      const good = maxImb < 5;
+      doc.fillColor(good ? '#16A34A' : '#DC2626').fontSize(7).font('Helvetica-Bold')
+        .text(`Max Z Imbalance: ${maxImb.toFixed(2)}%  |  Condition Status: ${good ? 'Normal / Good' : 'Investigate (High Imbalance)'}`,
+          chartX, chartY + chartH + 4, { width: chartW });
+    } else {
+      const missing = ['1-2', '1-3', '2-3'].filter(p => !seen.has(p));
+      const note = missing.length
+        ? `Insufficient data — capture Phase ${missing.join(', ')} to compute`
+        : 'Insufficient data to compute imbalance';
+      doc.fillColor('#64748B').fontSize(7).font('Helvetica-Bold')
+        .text(`Max Z Imbalance: —  |  Condition Status: ${note}`,
+          chartX, chartY + chartH + 4, { width: chartW });
+    }
+  };
+
   // Full-width single-chart row. Kept as a helper so the page-fit and gap logic
   // stays in one place. Each chart gets its own row (no side-by-side pairs) and
   // the row height is tuned so all 4 charts + polar fit on a single page.
@@ -3354,7 +3453,11 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
     const sidePad = 20; // extra left/right padding so charts don't touch edges
     const chartW = W - sidePad * 2;
     const y0 = doc.y;
-    drawSweepChart(cfg.title, cfg.group, cfg.type, 40 + sidePad, y0, chartW, chartH);
+    if (cfg.type === 'imp') {
+      drawBodePlot(cfg.group, 40 + sidePad, y0, chartW, chartH);
+    } else {
+      drawSweepChart(cfg.title, cfg.group, cfg.type, 40 + sidePad, y0, chartW, chartH);
+    }
     doc.y = y0 + blockH + rowGap;
   };
 
@@ -3506,27 +3609,28 @@ async function exportPDF(recordId, mainWindow, opts = {}) {
       doc.y += 4;
 
       // Count how many chart rows we'll draw so we can divide the remaining
-      // page space evenly. Guarantees everything fits without a page break.
+      // page space evenly. The impedance Bode plot needs ~1.6× the height
+      // of a single sweep chart because it stacks |Z| and θ panels.
       const rows = [];
-      if (hasSweep)    rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'ind' } });
-      if (hasResSweep) rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'res' } });
-      if (hasImpSweep) rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'imp' } });
-      if (hasPolar)    rows.push({ kind: 'polar' });
+      if (hasSweep)    rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'ind' }, weight: 1 });
+      if (hasResSweep) rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'res' }, weight: 1 });
+      if (hasImpSweep) rows.push({ kind: 'sweep', cfg: { title: '', group, type: 'imp' }, weight: 1.6 });
+      if (hasPolar)    rows.push({ kind: 'polar', weight: 1 });
       if (rows.length === 0) return;
 
       const available = (doc.page.height - 40) - doc.y;
-      // Reserve small vertical gap between rows.
       const perRowGap = 8;
       const totalGap = perRowGap * (rows.length - 1);
-      // Split remaining height evenly; leave ~14pt inside each sweep row for the
-      // status line + inner padding baked into drawSweepChartRow.
-      const perRow = Math.max(120, Math.floor((available - totalGap) / rows.length));
-      const chartH = Math.max(90, perRow - 14);
-      const polarCardH = perRow;
+      const totalWeight = rows.reduce((s, r) => s + r.weight, 0);
+      // Split remaining height by weight; leave ~14pt inside each sweep row for
+      // the status line + inner padding baked into drawSweepChartRow.
+      const unit = (available - totalGap) / totalWeight;
 
       rows.forEach(r => {
+        const rowH = Math.max(120, Math.floor(unit * r.weight));
+        const chartH = Math.max(90, rowH - 14);
         if (r.kind === 'sweep') drawSweepChartRow(r.cfg, chartH);
-        else drawPolarRow(polarData, polarCardH, group);
+        else drawPolarRow(polarData, rowH, group);
       });
     };
 

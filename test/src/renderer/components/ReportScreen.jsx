@@ -980,18 +980,37 @@ export default function ReportScreen({ record, onChange }) {
 
     // Auto-scaled Y domain — 15% padding on both sides so the top-most value
     // (e.g. 122 mH) is not clipped by a Recharts default nice-max like 100.
+    // For L / R sweeps the values often span 2+ orders of magnitude across
+    // frequency (e.g. 140 mH → 5000 mH at self-resonance). A linear axis
+    // squashes the baseline detail flat, so switch to a log axis when the
+    // ratio maxVal / minVal exceeds 20× and all values are positive.
     const hasRange = isFinite(minVal) && isFinite(maxVal);
     let yDomain;
+    let yScale = 'linear';
     if (hasRange) {
-      const span = maxVal - minVal;
-      const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(maxVal) * 0.1, 0.1);
-      const rawMin = minVal - pad;
-      const rawMax = maxVal + pad;
-      const yMin = minVal < 0
-        ? Math.floor(Math.min(minAreaY, rawMin))
-        : Math.max(0, Math.floor(rawMin));
-      const yMax = Math.ceil(rawMax);
-      yDomain = [yMin, yMax];
+      const wideSpan = minVal > 0 && (maxVal / minVal) > 20;
+      if (wideSpan) {
+        yScale = 'log';
+        // Log domain — pad the endpoints by ~10% in log-space so the top-most
+        // point isn't glued to the chart edge.
+        const logMin = Math.log10(minVal);
+        const logMax = Math.log10(maxVal);
+        const logSpan = logMax - logMin;
+        const logPad = Math.max(logSpan * 0.1, 0.05);
+        yDomain = [Math.pow(10, logMin - logPad), Math.pow(10, logMax + logPad)];
+      } else {
+        const span = maxVal - minVal;
+        const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(maxVal) * 0.1, 0.1);
+        const rawMin = minVal - pad;
+        const rawMax = maxVal + pad;
+        // Don't clamp to 0 — auto-scale means the axis floor should follow
+        // the actual data, not always sit at 0.
+        const yMin = minVal < 0
+          ? Math.floor(Math.min(minAreaY, rawMin))
+          : Math.floor(rawMin);
+        const yMax = Math.ceil(rawMax);
+        yDomain = [yMin, yMax];
+      }
     } else {
       yDomain = ['auto', 'auto'];
     }
@@ -1008,6 +1027,7 @@ export default function ReportScreen({ record, onChange }) {
                 <XAxis dataKey="name" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }} />
                 <YAxis
                   type="number"
+                  scale={yScale}
                   domain={yDomain}
                   allowDecimals
                   allowDataOverflow={false}
@@ -1087,6 +1107,188 @@ export default function ReportScreen({ record, onChange }) {
             );
           })()}
         </div>
+      </div>
+    );
+  };
+
+  // Bode plot — Z magnitude on top, θ phase angle on bottom, sharing the frequency
+  // x-axis. Rendered inside a single card whose outer id (`chart-<group>-imp`)
+  // matches the capture pattern used by handleExport so both panels flow into
+  // the PDF/Excel export as one image.
+  const renderBodePlot = (title, group) => {
+    const phases = ['1-2', '1-3', '2-3', '1-N', '2-N', '3-N'];
+    const freqs = ['100Hz', '120Hz', '1kHz', '10kHz', '100kHz'];
+    const freqPhaseColors = {
+      '1-2': '#E11D48', '1-3': '#10B981', '2-3': '#D97706',
+      '1-N': '#7C3AED', '2-N': '#06B6D4', '3-N': '#EC4899',
+    };
+
+    // Cell reader with spot fallback (matches the split-freq impedance table
+    // and the renderSweepTable used elsewhere).
+    const readCell = (phase, f) => {
+      let z = mulData[`${group}_imp_${phase}_${f}_z`]?.value;
+      let d = mulData[`${group}_imp_${phase}_${f}_deg`]?.value;
+      if (z === undefined || z === null || z === '') {
+        const spot = mulData[`${group}_imp_${phase}_z`];
+        if (spot?.frequency === f) z = spot?.value;
+      }
+      if (d === undefined || d === null || d === '') {
+        const spotD = mulData[`${group}_imp_${phase}_deg`];
+        if (spotD?.frequency === f) d = spotD?.value;
+      }
+      return {
+        z: (z === undefined || z === null || z === '') ? undefined : parseFloat(z),
+        d: (d === undefined || d === null || d === '') ? undefined : parseFloat(d),
+      };
+    };
+
+    // Build a flat dataset keyed by frequency; each row carries the Z (as
+    // `${phase}`) and θ (as `${phase}_deg`) values for every phase.
+    const rows = freqs.map(f => {
+      const row = { name: f };
+      phases.forEach(phase => {
+        const { z, d } = readCell(phase, f);
+        if (z !== undefined && !isNaN(z)) row[phase] = z;
+        if (d !== undefined && !isNaN(d)) row[`${phase}_deg`] = d;
+      });
+      return row;
+    });
+
+    const hasData = rows.some(r => phases.some(p => r[p] !== undefined || r[`${p}_deg`] !== undefined));
+    if (!hasData) return null;
+
+    // ── Z panel domain (log when the range is wide, else linear un-clamped) ──
+    let zMin = Infinity, zMax = -Infinity;
+    rows.forEach(r => phases.forEach(p => {
+      const v = r[p];
+      if (v !== undefined) { if (v < zMin) zMin = v; if (v > zMax) zMax = v; }
+    }));
+    const zHasRange = isFinite(zMin) && isFinite(zMax);
+    let zScale = 'linear';
+    let zDomain;
+    if (zHasRange) {
+      const wide = zMin > 0 && (zMax / zMin) > 20;
+      if (wide) {
+        zScale = 'log';
+        const logMin = Math.log10(zMin);
+        const logMax = Math.log10(zMax);
+        const pad = Math.max((logMax - logMin) * 0.1, 0.05);
+        zDomain = [Math.pow(10, logMin - pad), Math.pow(10, logMax + pad)];
+      } else {
+        const span = zMax - zMin;
+        const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(zMax) * 0.1, 0.1);
+        zDomain = [Math.floor(zMin - pad), Math.ceil(zMax + pad)];
+      }
+    } else {
+      zDomain = ['auto', 'auto'];
+    }
+
+    // ── θ panel domain (always linear, allow negative) ──
+    let dMin = Infinity, dMax = -Infinity;
+    rows.forEach(r => phases.forEach(p => {
+      const v = r[`${p}_deg`];
+      if (v !== undefined) { if (v < dMin) dMin = v; if (v > dMax) dMax = v; }
+    }));
+    const dHasRange = isFinite(dMin) && isFinite(dMax);
+    let dDomain;
+    if (dHasRange) {
+      const span = dMax - dMin;
+      const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(dMax) * 0.1, 1);
+      dDomain = [Math.floor(dMin - pad), Math.ceil(dMax + pad)];
+    } else {
+      dDomain = ['auto', 'auto'];
+    }
+
+    // Imbalance status for Z (drives the coloured status line under the plot).
+    let hasAnyImb = false, maxImb = 0;
+    const seenPhases = new Set();
+    freqs.forEach(f => {
+      const v12 = readCell('1-2', f).z;
+      const v13 = readCell('1-3', f).z;
+      const v23 = readCell('2-3', f).z;
+      if (v12 !== undefined) seenPhases.add('1-2');
+      if (v13 !== undefined) seenPhases.add('1-3');
+      if (v23 !== undefined) seenPhases.add('2-3');
+      const imb = calculateImbalance(v12, v13, v23);
+      if (imb !== null) {
+        hasAnyImb = true;
+        if (imb > maxImb) maxImb = imb;
+      }
+    });
+    const missingPhases = ['1-2', '1-3', '2-3'].filter(p => !seenPhases.has(p));
+
+    const panel = (dataKeySuffix, domain, scale, yLabel) => (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={rows} margin={{ top: 4, right: 10, left: 5, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <XAxis dataKey="name" style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}>
+            <Label value={yLabel === 'Z (Ω)' ? '' : 'Frequency'} position="insideBottom" offset={-2} style={{ fontSize: 8, fill: '#64748b', fontWeight: 700 }} />
+          </XAxis>
+          <YAxis
+            type="number"
+            scale={scale}
+            domain={domain}
+            allowDecimals
+            allowDataOverflow={false}
+            width={48}
+            tickFormatter={formatAxisTick}
+            style={{ fontSize: 8, fill: '#64748b', fontWeight: 600 }}
+          >
+            <Label value={yLabel} angle={-90} position="insideLeft" offset={12} style={{ fontSize: 9, fill: '#475569', fontWeight: 700, textAnchor: 'middle' }} />
+          </YAxis>
+          <Tooltip contentStyle={{ fontSize: 9, borderRadius: 4, border: '1px solid #cbd5e1', background: '#fff' }} />
+          <Legend verticalAlign="bottom" height={22} iconSize={8} iconType="circle" wrapperStyle={{ fontSize: 8, fontWeight: 700, fill: '#475569', paddingTop: 4 }} />
+          {phases.map(phase => {
+            const key = dataKeySuffix ? `${phase}${dataKeySuffix}` : phase;
+            const hasLine = rows.some(r => r[key] !== undefined);
+            if (!hasLine) return null;
+            return (
+              <Line
+                key={phase}
+                type="linear"
+                dataKey={key}
+                name={`Phase ${phase}`}
+                stroke={freqPhaseColors[phase] || '#64748b'}
+                activeDot={{ r: 4 }}
+                strokeWidth={1.5}
+                dot={{ r: 2 }}
+                connectNulls
+              />
+            );
+          })}
+        </LineChart>
+      </ResponsiveContainer>
+    );
+
+    return (
+      <div key={`${group}_imp_bode`} id={`chart-${group}-imp`} style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+        <h5 style={{ fontSize: 11, fontWeight: 700, color: '#1e3a8a', margin: '0 0 6px 0' }}>{title}</h5>
+        {/* Z magnitude — top panel */}
+        <div style={{ height: 160, width: '100%', minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, marginBottom: 6 }}>
+          {panel('', zDomain, zScale, 'Z (Ω)')}
+        </div>
+        {/* θ phase angle — bottom panel */}
+        <div style={{ height: 140, width: '100%', minWidth: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6 }}>
+          {panel('_deg', dDomain, 'linear', 'θ (°)')}
+        </div>
+        {(() => {
+          if (hasAnyImb) {
+            const good = maxImb < 5;
+            return (
+              <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: good ? '#16a34a' : '#dc2626' }}>
+                Max Z Imbalance: {maxImb.toFixed(2)}% | Condition Status: {good ? 'Normal / Good' : 'Investigate (High Imbalance)'}
+              </div>
+            );
+          }
+          const missingLabel = missingPhases.length
+            ? `Insufficient data — capture Phase ${missingPhases.join(', ')} to compute`
+            : 'Insufficient data to compute imbalance';
+          return (
+            <div style={{ marginTop: 8, fontSize: 10, fontWeight: 'bold', color: '#64748b' }}>
+              Max Z Imbalance: — | Condition Status: {missingLabel}
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -2417,7 +2619,7 @@ export default function ReportScreen({ record, onChange }) {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
                         {polarCard('stator', statorPolar, 'Stator Impedance Polar Plot')}
                         {hasZStatorSweep
-                          ? renderSweepTable('Stator Impedance Sweep (Ω)', 'stator', 'imp')
+                          ? renderBodePlot('Stator Impedance Bode Plot — |Z| & θ vs Frequency', 'stator')
                           : <div style={{ border: '1px dashed #e2e8f0', borderRadius: 8, padding: 12, background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>No Stator Z sweep data</div>}
                       </div>
                     )}
@@ -2425,7 +2627,7 @@ export default function ReportScreen({ record, onChange }) {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'stretch' }}>
                         {polarCard('rotor', rotorPolar, 'Rotor Impedance Polar Plot')}
                         {hasZRotorSweep
-                          ? renderSweepTable('Rotor Impedance Sweep (Ω)', 'rotor', 'imp')
+                          ? renderBodePlot('Rotor Impedance Bode Plot — |Z| & θ vs Frequency', 'rotor')
                           : <div style={{ border: '1px dashed #e2e8f0', borderRadius: 8, padding: 12, background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>No Rotor Z sweep data</div>}
                       </div>
                     )}

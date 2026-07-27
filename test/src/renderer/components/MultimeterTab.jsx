@@ -820,14 +820,28 @@ export default function MultimeterTab({ record, demoMode = false, multimeterStat
     const originalFreq = freq;
     const originalMode = mode;
 
-    // Force the app mode to match the sweep type so the header/live readout
-    // reflect the sweep in progress and the demo simulation uses the correct base.
+    // Force the app mode + secondary to match the sweep type so the header/live
+    // readout reflect the sweep in progress and the group card highlights active.
+    const sweepSecondary = sweepMode === 'Z' ? 'THETA' : secondary;
     if (sweepMode !== mode) {
       setMode(sweepMode);
+      if (sweepMode === 'Z') setSecondary('THETA');
+      // Send an explicit mode change command to the device up-front so the
+      // physical LCR is in the right mode before we start the sweep loop.
+      // Without this, users who click ⚡ without first clicking the group card
+      // see the sweep populate values while the device (and mode badge) still
+      // read the previous mode until the first per-freq command lands.
+      if (!demoMode && api.sendMultimeterCommand) {
+        try {
+          await api.sendMultimeterCommand(sweepMode, freqs[0], sweepSecondary, equivalent);
+          // Small settle after the initial mode switch so the device is ready
+          // for the first frequency step.
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } catch (err) {
+          console.error(`[Sweep] Failed to pre-set mode ${sweepMode}:`, err);
+        }
+      }
     }
-
-    // For Z sweep, force secondary to THETA so we capture both Z and phase angle
-    const sweepSecondary = sweepMode === 'Z' ? 'THETA' : secondary;
 
     // For Z sweep: compute the group's spot freq so we can mirror to `_z`/`_deg`
     // (keeps the existing single-freq report path working unchanged).
